@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ภาพรวมการเงินของฉัน</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+Thai:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #F6F3EC; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState } = React;
+
+const fmt = (n) => "฿" + Math.round(n).toLocaleString("th-TH");
+const pct = (n, total) => ((n / total) * 100).toFixed(1) + "%";
+
+// ---------- DATA (extracted from the Happy Money app screenshots) ----------
+const ASSET_GROUPS = [
+  { key: "liquid", label: "สินทรัพย์สภาพคล่อง", value: 49302, color: "#8AB59B",
+    items: [["TTB",1],["Kbank",300],["KTB",2000],["BBL",2000],["GSB",19000],["SCB",1],["BAY",5000],["สหกรณ์ AIS",21000]] },
+  { key: "invest", label: "สินทรัพย์ลงทุน", value: 1545424, color: "#4F8467",
+    items: [["หุ้นสหกรณ์ AIS",726000],["หุ้นสหกรณ์ SCB",33000],["กองทุนสำรองเลี้ยงชีพ",786424]] },
+  { key: "personal", label: "สินทรัพย์ส่วนตัว", value: 15060000, color: "#2F5D46",
+    items: [["บ้าน / คอนโด (อยู่อาศัย)",15000000],["ทองคำ",60000]] },
+];
+const TOTAL_ASSETS = ASSET_GROUPS.reduce((s, g) => s + g.value, 0);
+
+const LIABILITY_GROUPS = [
+  { key: "short", label: "หนี้สินระยะสั้น", value: 1407000, color: "#CB8567",
+    items: [["บัตรกดเงินสด KKP",417000],["บัตรกดเงินสด CIMB",400000],["บัตรกดเงินสด UOB",372000],["บัตรกดเงินสด TMB",218000]] },
+  { key: "long", label: "หนี้สินระยะยาว", value: 13566000, color: "#7A2E1F",
+    items: [["หนี้คอนโด",4065000],["หนี้บ้าน",3087000],["สินเชื่อส่วนบุคคล",5860000],["หนี้สหกรณ์",554000]] },
+];
+const TOTAL_LIAB = LIABILITY_GROUPS.reduce((s, g) => s + g.value, 0);
+const NET_WORTH = TOTAL_ASSETS - TOTAL_LIAB;
+
+const INCOME_JULY = { total: 132160, items: [["บริษัท 1 (เงินเดือน)",102160],["รายได้เสริม",30000]] };
+
+const FIXED_EXPENSE_GROUPS = [
+  { key: "tax", label: "ภาษี/ประกันสังคม", value: 9359, color: "#7A4F22",
+    items: [["ภาษีหัก ณ ที่จ่าย",8484],["ประกันสังคม",875]] },
+  { key: "save", label: "ออม/กองทุนเกษียณ", value: 17216, color: "#B07E45",
+    items: [["กองทุนสำรองเลี้ยงชีพ",10216],["สหกรณ์ออมทรัพย์ (1)",1000],["สหกรณ์ออมทรัพย์ (2)",5000],["เงินฝากธนาคาร AIS",1000]] },
+  { key: "debt", label: "ผ่อนชำระหนี้", value: 88094, color: "#8A5A2B",
+    items: [["ค่าผ่อนบ้าน/คอนโด",18700],["ค่าผ่อนคอนโด",28000],["สถาบันการเงิน TMB",5950],["สถาบันการเงิน KKP",8864],["สถาบันการเงิน CIMB",9380],["สถาบันการเงิน UOB",9300],["ค่าผ่อนหนี้สหกรณ์",7900]] },
+];
+const FIXED_TOTAL = FIXED_EXPENSE_GROUPS.reduce((s, g) => s + g.value, 0);
+
+const VARIABLE_EXPENSE_GROUPS = [
+  { key: "var-household", label: "ของใช้ในบ้าน", value: 6715, color: "#7A4F22",
+    items: [["บัตรเครดิต · Dreamex50 (ผ่อน 8/10)",3772],["บัตรเครดิต · DreameH16 (ผ่อน 5/10)",2358],["บัตรเครดิต · URPet (ผ่อน 5/10)",585]] },
+  { key: "var-repair", label: "ซ่อมแซมบ้าน", value: 5000, color: "#8A5A2B",
+    items: [["บัตรเครดิต · SECOM",5000]] },
+  { key: "var-electric", label: "ไฟฟ้า", value: 4300, color: "#9C6B37",
+    items: [["บัตรเครดิต · H43",4000],["บัตรเครดิต · คอนโด",300]] },
+  { key: "var-phone", label: "โทรศัพท์", value: 3900, color: "#B07E45",
+    items: [["บัตรเครดิต · Dad",600],["บัตรเครดิต (ไม่ระบุร้านค้า)",3300]] },
+  { key: "var-insurance", label: "ประกันชีวิต", value: 3700, color: "#C99A57",
+    items: [["บัตรเครดิต · AIA",3700]] },
+  { key: "var-furniture", label: "เฟอร์นิเจอร์", value: 2442, color: "#D9AF78",
+    items: [["บัตรเครดิต · Coway",1520],["บัตรเครดิต · LG",922]] },
+  { key: "var-app", label: "แอปพลิเคชั่น", value: 947, color: "#E6C596",
+    items: [["บัตรเครดิต · YouTube",399],["บัตรเครดิต · Google One",350],["บัตรเครดิต · Netflix",99],["บัตรเครดิต · iCloud",99]] },
+];
+const VARIABLE_TOTAL = VARIABLE_EXPENSE_GROUPS.reduce((s, g) => s + g.value, 0);
+
+const TOTAL_EXPENSE = FIXED_TOTAL + VARIABLE_TOTAL;
+const NET_CASHFLOW = INCOME_JULY.total - TOTAL_EXPENSE;
+
+const EXPENSE_SPLIT = [
+  { key: "fixed", label: "รายจ่ายคงที่ (วันที่ 1)", value: FIXED_TOTAL, color: "#8A5A2B" },
+  { key: "variable", label: "รายจ่ายผันแปรรายวัน", value: VARIABLE_TOTAL, color: "#D9AF78" },
+];
+
+const MONTH_KEY = "2569-07";
+const STORAGE_KEY = `checklist:${MONTH_KEY}`;
+const CHECKLIST_ITEMS = [
+  ...FIXED_EXPENSE_GROUPS.flatMap((g) => g.items.map(([name, val], i) => ({ key: `${g.key}-${i}`, name, val }))),
+  ...VARIABLE_EXPENSE_GROUPS.flatMap((g) => g.items.map(([name, val], i) => ({ key: `${g.key}-${i}`, name, val }))),
+];
+
+// ---------- small building blocks ----------
+function CompositionBar({ groups, total }) {
+  return (
+    <div style={{ display: "flex", width: "100%", height: 14, borderRadius: 999, overflow: "hidden", background: "#EDE8DC" }}>
+      {groups.map((g) => (
+        <div key={g.key} style={{ width: `${(g.value / total) * 100}%`, background: g.color }} title={g.label} />
+      ))}
+    </div>
+  );
+}
+
+function GroupList({ groups, total, checkable = false, paid = {}, onToggle }) {
+  const [open, setOpen] = useState(null);
+  return (
+    <div style={{ marginTop: 14 }}>
+      {groups.map((g) => (
+        <div key={g.key} style={{ borderBottom: "1px solid #E6E0D2" }}>
+          <button
+            onClick={() => setOpen(open === g.key ? null : g.key)}
+            style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 2px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 3, background: g.color, flexShrink: 0 }} />
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 14, color: "#202B29" }}>{g.label}</span>
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#6B6459" }}>{pct(g.value, total)}</span>
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 14, color: "#202B29" }}>{fmt(g.value)}</span>
+              <span style={{ fontSize: 12, color: "#6B6459", transform: open === g.key ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▾</span>
+            </span>
+          </button>
+          {open === g.key && (
+            <div style={{ padding: "0 2px 12px 22px", display: "flex", flexDirection: "column", gap: 8 }}>
+              {g.items.map(([name, val], i) => {
+                const itemKey = `${g.key}-${i}`;
+                const isPaid = checkable && !!paid[itemKey];
+                return (
+                  <div key={name} onClick={checkable ? () => onToggle(itemKey) : undefined}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, cursor: checkable ? "pointer" : "default" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, color: isPaid ? "#A79E8E" : "#6B6459" }}>
+                      {checkable && (
+                        <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${isPaid ? "#2F5D46" : "#C9C2B2"}`, background: isPaid ? "#2F5D46" : "transparent", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 10, color: "#fff" }}>
+                          {isPaid ? "✓" : ""}
+                        </span>
+                      )}
+                      <span style={{ textDecoration: isPaid ? "line-through" : "none" }}>{name}</span>
+                    </span>
+                    <span style={{ color: isPaid ? "#A79E8E" : "#202B29", textDecoration: isPaid ? "line-through" : "none" }}>{fmt(val)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub, color }) {
+  return (
+    <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: "14px 16px" }}>
+      <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", marginBottom: 6 }}>{label}</div>
+      <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 19, color: color || "#202B29" }}>{value}</div>
+      {sub && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459", marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function SectionTitle({ eyebrow, title }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, letterSpacing: "0.08em", color: "#AD8A2E", fontWeight: 600, textTransform: "uppercase" }}>{eyebrow}</div>
+      <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 18, color: "#202B29", marginTop: 2 }}>{title}</div>
+    </div>
+  );
+}
+
+function Dashboard() {
+  // Checklist state persisted in the browser's localStorage (works on any real website host)
+  const [paid, setPaid] = useState(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  });
+
+  const togglePaid = (key) => {
+    setPaid((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
+  };
+
+  const resetChecklist = () => {
+    setPaid({});
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({})); } catch (e) {}
+  };
+
+  const paidCount = CHECKLIST_ITEMS.filter((it) => paid[it.key]).length;
+  const paidSum = CHECKLIST_ITEMS.filter((it) => paid[it.key]).reduce((s, it) => s + it.val, 0);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F6F3EC", padding: "28px 16px 60px", display: "flex", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: 480 }}>
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, letterSpacing: "0.1em", color: "#AD8A2E", fontWeight: 600, textTransform: "uppercase" }}>
+            HAPPY MONEY · ข้อมูลล่าสุด 6 เม.ย. 2569
+          </div>
+          <h1 style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 24, color: "#202B29", margin: "6px 0 0" }}>ภาพรวมการเงินของฉัน</h1>
+        </div>
+
+        <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 18, padding: "20px 20px 22px", marginBottom: 16 }}>
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459" }}>ความมั่งคั่งสุทธิ (สินทรัพย์ − หนี้สิน)</div>
+          <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 34, color: "#202B29", margin: "4px 0 16px" }}>{fmt(NET_WORTH)}</div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, marginBottom: 5 }}>
+            <span style={{ color: "#2F5D46", fontWeight: 600 }}>สินทรัพย์รวม</span>
+            <span style={{ color: "#202B29", fontWeight: 700 }}>{fmt(TOTAL_ASSETS)}</span>
+          </div>
+          <div style={{ width: "100%", height: 10, borderRadius: 999, background: "#EDE8DC", overflow: "hidden" }}>
+            <div style={{ width: "100%", height: "100%", background: "#2F5D46" }} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, margin: "12px 0 5px" }}>
+            <span style={{ color: "#7A2E1F", fontWeight: 600 }}>หนี้สินรวม</span>
+            <span style={{ color: "#202B29", fontWeight: 700 }}>{fmt(TOTAL_LIAB)}</span>
+          </div>
+          <div style={{ width: "100%", height: 10, borderRadius: 999, background: "#EDE8DC", overflow: "hidden" }}>
+            <div style={{ width: `${(TOTAL_LIAB / TOTAL_ASSETS) * 100}%`, height: "100%", background: "#7A2E1F" }} />
+          </div>
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459", marginTop: 10 }}>
+            หนี้สินคิดเป็น {pct(TOTAL_LIAB, TOTAL_ASSETS)} ของสินทรัพย์รวม
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 24 }}>
+          <StatCard label="รายรับ ก.ค. 2569" value={fmt(INCOME_JULY.total)} color="#1F6E6B" />
+          <StatCard label="รายจ่าย ก.ค. 2569" value={fmt(TOTAL_EXPENSE)} sub={`คงที่ ${fmt(FIXED_TOTAL)} + ผันแปร ${fmt(VARIABLE_TOTAL)}`} color="#8A5A2B" />
+          <StatCard label="คงเหลือสุทธิเดือนนี้" value={fmt(NET_CASHFLOW)} sub={NET_CASHFLOW >= 0 ? `อัตราการออม ${pct(NET_CASHFLOW, INCOME_JULY.total)}` : "รายจ่ายสูงกว่ารายรับเดือนนี้"} color={NET_CASHFLOW >= 0 ? "#202B29" : "#7A2E1F"} />
+          <StatCard label="สินทรัพย์สภาพคล่อง" value={fmt(ASSET_GROUPS[0].value)} sub="เงินสด/บัญชีออมทรัพย์" color="#202B29" />
+        </div>
+
+        <div style={{ marginBottom: 24 }}>
+          <SectionTitle eyebrow="สินทรัพย์" title={`รวม ${fmt(TOTAL_ASSETS)}`} />
+          <CompositionBar groups={ASSET_GROUPS} total={TOTAL_ASSETS} />
+          <GroupList groups={ASSET_GROUPS} total={TOTAL_ASSETS} />
+        </div>
+
+        <div style={{ marginBottom: 24 }}>
+          <SectionTitle eyebrow="หนี้สิน" title={`รวม ${fmt(TOTAL_LIAB)}`} />
+          <CompositionBar groups={LIABILITY_GROUPS} total={TOTAL_LIAB} />
+          <GroupList groups={LIABILITY_GROUPS} total={TOTAL_LIAB} />
+        </div>
+
+        <div style={{ marginBottom: 24 }}>
+          <SectionTitle eyebrow="กระแสเงินสด · กรกฎาคม 2569" title="รายรับ vs รายจ่าย" />
+          <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16 }}>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, marginBottom: 5 }}>
+                <span style={{ color: "#1F6E6B", fontWeight: 600 }}>รายรับ</span>
+                <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(INCOME_JULY.total)}</span>
+              </div>
+              <div style={{ width: "100%", height: 12, borderRadius: 999, background: "#EDE8DC" }}>
+                <div style={{ width: "100%", height: "100%", borderRadius: 999, background: "#1F6E6B" }} />
+              </div>
+            </div>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, marginBottom: 5 }}>
+                <span style={{ color: "#8A5A2B", fontWeight: 600 }}>รายจ่าย</span>
+                <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(TOTAL_EXPENSE)}</span>
+              </div>
+              <div style={{ width: "100%", height: 12, borderRadius: 999, background: "#EDE8DC" }}>
+                <div style={{ width: `${Math.min((TOTAL_EXPENSE / INCOME_JULY.total) * 100, 100)}%`, height: "100%", borderRadius: 999, background: "#8A5A2B" }} />
+              </div>
+            </div>
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E6E0D2", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459" }}>คงเหลือสุทธิ</span>
+              <span style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 20, color: NET_CASHFLOW >= 0 ? "#202B29" : "#7A2E1F" }}>{fmt(NET_CASHFLOW)}</span>
+            </div>
+            {NET_CASHFLOW < 0 && (
+              <div style={{ marginTop: 6, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#7A2E1F" }}>
+                รายจ่ายรวมสูงกว่ารายรับ {fmt(Math.abs(NET_CASHFLOW))} บาทในเดือนนี้
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 8 }}>
+          <SectionTitle eyebrow="รายจ่ายแยกตามหมวด" title={`รวม ${fmt(TOTAL_EXPENSE)}`} />
+          <CompositionBar groups={EXPENSE_SPLIT} total={TOTAL_EXPENSE} />
+          <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459", margin: "6px 0 18px" }}>
+            <span>คงที่ {fmt(FIXED_TOTAL)} ({pct(FIXED_TOTAL, TOTAL_EXPENSE)})</span>
+            <span>ผันแปร {fmt(VARIABLE_TOTAL)} ({pct(VARIABLE_TOTAL, TOTAL_EXPENSE)})</span>
+          </div>
+
+          <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16, marginBottom: 20 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#202B29" }}>เช็คลิสต์การจ่ายเดือนนี้</span>
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459" }}>{paidCount}/{CHECKLIST_ITEMS.length} รายการ</span>
+            </div>
+            <div style={{ width: "100%", height: 8, borderRadius: 999, background: "#EDE8DC", overflow: "hidden" }}>
+              <div style={{ width: `${CHECKLIST_ITEMS.length ? (paidCount / CHECKLIST_ITEMS.length) * 100 : 0}%`, height: "100%", background: "#2F5D46", transition: "width .25s" }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459" }}>
+              <span>จ่ายแล้ว {fmt(paidSum)} จาก {fmt(TOTAL_EXPENSE)}</span>
+              <button onClick={resetChecklist} style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, cursor: "pointer", padding: 0 }}>ล้างเช็คลิสต์</button>
+            </div>
+          </div>
+
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B", marginBottom: 2 }}>รายจ่ายคงที่ · หักอัตโนมัติวันที่ 1 ทุกเดือน</div>
+          <GroupList groups={FIXED_EXPENSE_GROUPS} total={FIXED_TOTAL} checkable paid={paid} onToggle={togglePaid} />
+
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B", margin: "20px 0 10px" }}>รายจ่ายผันแปร · ตามรายวัน (แตะหมวดเพื่อดูรายละเอียดร้าน/บัตรที่ใช้จ่าย)</div>
+          <GroupList groups={VARIABLE_EXPENSE_GROUPS} total={VARIABLE_TOTAL} checkable paid={paid} onToggle={togglePaid} />
+        </div>
+
+        <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
+          หมายเหตุ: ข้อมูลสินทรัพย์และหนี้สิน ณ วันที่ 6 เม.ย. 2569 รายจ่ายเดือน ก.ค. 2569 แบ่งเป็นรายจ่ายคงที่ที่หักอัตโนมัติทุกวันที่ 1 และรายจ่ายผันแปรรายวันเท่าที่ปรากฏในภาพ (ถึงวันที่ 27 ก.ค.) อาจไม่ครบทั้งเดือน แตะรายการเพื่อติ๊กว่าจ่ายแล้ว สถานะจะถูกจำไว้ในเบราว์เซอร์นี้เท่านั้น
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Dashboard />);
+</script>
+</body>
+</html>
