@@ -18,7 +18,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 
 <script type="text/babel" data-presets="react">
-const { useState } = React;
+const { useState, useEffect } = React;
 
 const fmt = (n) => "฿" + Math.round(n).toLocaleString("th-TH");
 const pct = (n, total) => ((n / total) * 100).toFixed(1) + "%";
@@ -82,7 +82,12 @@ const EXPENSE_SPLIT = [
 ];
 
 const MONTH_KEY = "2569-07";
-const STORAGE_KEY = `checklist:${MONTH_KEY}`;
+// 🔧 SETUP: paste your Google Apps Script Web App URL here (ends in /exec).
+// See the setup steps provided alongside this file. Until you do, checklist
+// data is just kept in this browser (localStorage) as a fallback.
+const DRIVE_API_URL = "https://script.google.com/macros/s/AKfycbx7icu7pxNBl1guS0pMXkzZ8F7KMKVIIL2Yvw7O5SJ6AJwJ-dM6hWJ3pSwA8mo8QdPK/exec";
+const DRIVE_CONFIGURED = DRIVE_API_URL && DRIVE_API_URL.indexOf("PASTE_YOUR") === -1;
+const LOCAL_FALLBACK_KEY = "happy-money-checklist-fallback";
 const CHECKLIST_ITEMS = [
   ...FIXED_EXPENSE_GROUPS.flatMap((g) => g.items.map(([name, val], i) => ({ key: `${g.key}-${i}`, name, val }))),
   ...VARIABLE_EXPENSE_GROUPS.flatMap((g) => g.items.map(([name, val], i) => ({ key: `${g.key}-${i}`, name, val }))),
@@ -167,27 +172,55 @@ function SectionTitle({ eyebrow, title }) {
 }
 
 function Dashboard() {
-  // Checklist state persisted in the browser's localStorage (works on any real website host)
-  const [paid, setPaid] = useState(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : {};
-    } catch (e) {
-      return {};
+  // Checklist state, synced to Google Drive via a small Google Apps Script "bridge"
+  // (see setup instructions). Falls back to this browser's localStorage until the
+  // DRIVE_API_URL below is configured, so the app still works in the meantime.
+  const [allData, setAllData] = useState({});
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!DRIVE_CONFIGURED) {
+      try {
+        const raw = localStorage.getItem(LOCAL_FALLBACK_KEY);
+        if (mounted) setAllData(raw ? JSON.parse(raw) : {});
+      } catch (e) {}
+      if (mounted) setLoaded(true);
+      return;
     }
-  });
+    fetch(DRIVE_API_URL)
+      .then((r) => r.json())
+      .then((data) => { if (mounted) setAllData(data || {}); })
+      .catch(() => { if (mounted) setSyncError(true); })
+      .finally(() => { if (mounted) setLoaded(true); });
+    return () => { mounted = false; };
+  }, []);
+
+  const persist = (nextAllData) => {
+    setAllData(nextAllData);
+    if (!DRIVE_CONFIGURED) {
+      try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(nextAllData)); } catch (e) {}
+      return;
+    }
+    setSyncError(false);
+    fetch(DRIVE_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids a CORS preflight
+      body: JSON.stringify(nextAllData),
+    }).catch(() => setSyncError(true));
+  };
+
+  const paid = allData[MONTH_KEY] || {};
 
   const togglePaid = (key) => {
-    setPaid((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) {}
-      return next;
-    });
+    const month = { ...(allData[MONTH_KEY] || {}) };
+    month[key] = !month[key];
+    persist({ ...allData, [MONTH_KEY]: month });
   };
 
   const resetChecklist = () => {
-    setPaid({});
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({})); } catch (e) {}
+    persist({ ...allData, [MONTH_KEY]: {} });
   };
 
   const paidCount = CHECKLIST_ITEMS.filter((it) => paid[it.key]).length;
@@ -290,6 +323,15 @@ function Dashboard() {
               <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#202B29" }}>เช็คลิสต์การจ่ายเดือนนี้</span>
               <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459" }}>{paidCount}/{CHECKLIST_ITEMS.length} รายการ</span>
             </div>
+            <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, marginBottom: 8, color: syncError ? "#7A2E1F" : DRIVE_CONFIGURED ? "#2F5D46" : "#AD8A2E" }}>
+              {!loaded
+                ? "กำลังโหลด..."
+                : syncError
+                ? "⚠️ ซิงก์ Google Drive ไม่สำเร็จ (เช็คอินเทอร์เน็ต/URL) — ใช้ข้อมูลล่าสุดที่มีอยู่ไปก่อน"
+                : DRIVE_CONFIGURED
+                ? "☁️ ซิงก์กับ Google Drive แล้ว — เปิดจากเครื่องไหนก็เห็นเหมือนกัน"
+                : "ยังไม่ได้ตั้งค่า Google Drive — ข้อมูลเก็บไว้ในเบราว์เซอร์นี้ก่อน"}
+            </div>
             <div style={{ width: "100%", height: 8, borderRadius: 999, background: "#EDE8DC", overflow: "hidden" }}>
               <div style={{ width: `${CHECKLIST_ITEMS.length ? (paidCount / CHECKLIST_ITEMS.length) * 100 : 0}%`, height: "100%", background: "#2F5D46", transition: "width .25s" }} />
             </div>
@@ -307,7 +349,7 @@ function Dashboard() {
         </div>
 
         <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-          หมายเหตุ: ข้อมูลสินทรัพย์และหนี้สิน ณ วันที่ 6 เม.ย. 2569 รายจ่ายเดือน ก.ค. 2569 แบ่งเป็นรายจ่ายคงที่ที่หักอัตโนมัติทุกวันที่ 1 และรายจ่ายผันแปรรายวันเท่าที่ปรากฏในภาพ (ถึงวันที่ 27 ก.ค.) อาจไม่ครบทั้งเดือน แตะรายการเพื่อติ๊กว่าจ่ายแล้ว สถานะจะถูกจำไว้ในเบราว์เซอร์นี้เท่านั้น
+          หมายเหตุ: ข้อมูลสินทรัพย์และหนี้สิน ณ วันที่ 6 เม.ย. 2569 รายจ่ายเดือน ก.ค. 2569 แบ่งเป็นรายจ่ายคงที่ที่หักอัตโนมัติทุกวันที่ 1 และรายจ่ายผันแปรรายวันเท่าที่ปรากฏในภาพ (ถึงวันที่ 27 ก.ค.) อาจไม่ครบทั้งเดือน แตะรายการเพื่อติ๊กว่าจ่ายแล้ว สถานะจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
         </div>
       </div>
     </div>
