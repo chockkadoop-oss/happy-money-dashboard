@@ -30,6 +30,10 @@ function parseNum(str, fallback) {
 function makeId() {
   return `item-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
+function makeGroupId() {
+  return `cat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+const NEW_CATEGORY_COLORS = ["#7A4F22","#8A5A2B","#9C6B37","#B07E45","#C99A57","#D9AF78","#E6C596","#B58650","#946B3E"];
 
 // ---------- Thai calendar helpers ----------
 const THAI_MONTHS_ABBR = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
@@ -208,19 +212,30 @@ const hintStyle = { fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11
 
 // Editable version of a group list: number input always, name input + add/remove
 // only when the section supports full item management (the expense checklists).
-function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveItem, editableName = true, allowAddRemove = true }) {
+// When allowCategoryManagement is on, whole categories (groups) can also be
+// renamed, added, or removed — used for expense sections only.
+function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveItem, editableName = true, allowAddRemove = true, allowCategoryManagement = false, onRenameGroup, onAddGroup, onRemoveGroup }) {
   return (
     <div style={{ marginTop: 14 }}>
       {groups.map((g) => {
         const groupTotal = g.items.reduce((s, it) => s + parseNum(it.value, 0), 0);
         return (
           <div key={g.key} style={{ border: "1px solid #E6E0D2", borderRadius: 12, padding: 12, marginBottom: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
                 <span style={{ width: 10, height: 10, borderRadius: 3, background: g.color, flexShrink: 0 }} />
-                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 14, color: "#202B29" }}>{g.label}</span>
+                {allowCategoryManagement ? (
+                  <input type="text" value={g.label} placeholder="ชื่อหมวดหมู่"
+                    onChange={(e) => onRenameGroup(g.key, e.target.value)}
+                    style={{ ...inputTextStyle, fontWeight: 600 }} />
+                ) : (
+                  <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 14, color: "#202B29" }}>{g.label}</span>
+                )}
               </span>
-              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, fontWeight: 700, color: "#202B29" }}>{fmt(groupTotal)}</span>
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, fontWeight: 700, color: "#202B29", flexShrink: 0 }}>{fmt(groupTotal)}</span>
+              {allowCategoryManagement && (
+                <button onClick={() => onRemoveGroup(g.key)} title="ลบหมวดหมู่นี้ทั้งหมด" style={removeBtnStyle}>✕</button>
+              )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {g.items.map((it) => (
@@ -247,6 +262,9 @@ function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveI
           </div>
         );
       })}
+      {allowCategoryManagement && (
+        <button onClick={onAddGroup} style={{ ...addBtnStyle, width: "100%", textAlign: "center", borderStyle: "solid", borderColor: "#AD8A2E", color: "#AD8A2E" }}>+ เพิ่มหมวดหมู่ใหม่</button>
+      )}
     </div>
   );
 }
@@ -403,28 +421,34 @@ function Dashboard() {
     setEditingLiabilities(false); setLiabilityDraft(null);
   };
 
-  // ---- fixed expenses (full CRUD: add / remove / rename / amount) ----
+  // ---- fixed expenses (full CRUD: add / remove / rename items, plus manage whole categories) ----
   const startEditFixed = () => { setFixedDraft(cloneAsDraft(fixedGroups)); setEditingFixed(true); };
   const updateFixedName = (gk, id, name) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
   const updateFixedValue = (gk, id, value) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
   const addFixedItem = (gk) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
   const removeFixedItem = (gk, id) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const renameFixedGroup = (gk, label) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, label }));
+  const addFixedGroup = () => setFixedDraft((prev) => [...prev, { key: makeGroupId(), label: "", color: NEW_CATEGORY_COLORS[prev.length % NEW_CATEGORY_COLORS.length], items: [] }]);
+  const removeFixedGroup = (gk) => setFixedDraft((prev) => prev.filter((g) => g.key !== gk));
   const cancelEditFixed = () => { setEditingFixed(false); setFixedDraft(null); };
   const saveEditFixed = () => {
-    const finalGroups = fixedDraft.map((g) => ({ ...g, items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    const finalGroups = fixedDraft.map((g) => ({ ...g, label: (g.label || "").trim() || "หมวดใหม่", items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
     persist({ ...allData, fixedGroups: finalGroups });
     setEditingFixed(false); setFixedDraft(null);
   };
 
-  // ---- variable expenses (full CRUD: add / remove / rename / amount) ----
+  // ---- variable expenses (full CRUD: add / remove / rename items, plus manage whole categories) ----
   const startEditVariable = () => { setVariableDraft(cloneAsDraft(variableGroups)); setEditingVariable(true); };
   const updateVariableName = (gk, id, name) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
   const updateVariableValue = (gk, id, value) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
   const addVariableItem = (gk) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
   const removeVariableItem = (gk, id) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const renameVariableGroup = (gk, label) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, label }));
+  const addVariableGroup = () => setVariableDraft((prev) => [...prev, { key: makeGroupId(), label: "", color: NEW_CATEGORY_COLORS[prev.length % NEW_CATEGORY_COLORS.length], items: [] }]);
+  const removeVariableGroup = (gk) => setVariableDraft((prev) => prev.filter((g) => g.key !== gk));
   const cancelEditVariable = () => { setEditingVariable(false); setVariableDraft(null); };
   const saveEditVariable = () => {
-    const finalGroups = variableDraft.map((g) => ({ ...g, items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    const finalGroups = variableDraft.map((g) => ({ ...g, label: (g.label || "").trim() || "หมวดใหม่", items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
     persist({ ...allData, variableGroups: finalGroups });
     setEditingVariable(false); setVariableDraft(null);
   };
@@ -571,22 +595,24 @@ function Dashboard() {
             <EditToggle editing={editingFixed} onStart={startEditFixed} onSave={saveEditFixed} onCancel={cancelEditFixed} startLabel="แก้ไขรายการ" />
           </div>
           {editingFixed ? (
-            <GroupEditor groups={fixedDraft} onChangeValue={updateFixedValue} onChangeName={updateFixedName} onAddItem={addFixedItem} onRemoveItem={removeFixedItem} />
+            <GroupEditor groups={fixedDraft} onChangeValue={updateFixedValue} onChangeName={updateFixedName} onAddItem={addFixedItem} onRemoveItem={removeFixedItem}
+              allowCategoryManagement onRenameGroup={renameFixedGroup} onAddGroup={addFixedGroup} onRemoveGroup={removeFixedGroup} />
           ) : (
             <GroupList groups={displayFixedGroups} total={fixedTotal} checkable paid={paid} onToggle={togglePaid} />
           )}
-          {editingFixed && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
+          {editingFixed && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, margin: "20px 0 10px" }}>
             <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายผันแปร · ตามรายวัน (แตะหมวดเพื่อดูรายละเอียด)</span>
             <EditToggle editing={editingVariable} onStart={startEditVariable} onSave={saveEditVariable} onCancel={cancelEditVariable} startLabel="แก้ไขรายการ" />
           </div>
           {editingVariable ? (
-            <GroupEditor groups={variableDraft} onChangeValue={updateVariableValue} onChangeName={updateVariableName} onAddItem={addVariableItem} onRemoveItem={removeVariableItem} />
+            <GroupEditor groups={variableDraft} onChangeValue={updateVariableValue} onChangeName={updateVariableName} onAddItem={addVariableItem} onRemoveItem={removeVariableItem}
+              allowCategoryManagement onRenameGroup={renameVariableGroup} onAddGroup={addVariableGroup} onRemoveGroup={removeVariableGroup} />
           ) : (
             <GroupList groups={displayVariableGroups} total={variableTotal} checkable paid={paid} onToggle={togglePaid} />
           )}
-          {editingVariable && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
+          {editingVariable && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
         </div>
 
         <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
