@@ -3,107 +3,150 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ภาพรวมการเงินของฉัน</title>
+<title>ภาพรวมการเงิน</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+Thai:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #F6F3EC; }
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+Thai:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #F6F3EC; }
 </style>
 </head>
 <body>
 <div id="root"></div>
-
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-
 <script type="text/babel" data-presets="react">
 const { useState, useEffect } = React;
 
-const fmt = (n) => "฿" + Math.round(n).toLocaleString("th-TH");
-const pct = (n, total) => ((n / total) * 100).toFixed(1) + "%";
+const fmt = (n) => "฿" + Math.round(n || 0).toLocaleString("th-TH");
+const pct = (n, total) => (total ? ((n / total) * 100).toFixed(1) : "0.0") + "%";
 
-// ---------- DATA (extracted from the Happy Money app screenshots) ----------
-const ASSET_GROUPS = [
-  { key: "liquid", label: "สินทรัพย์สภาพคล่อง", value: 49302, color: "#8AB59B",
-    items: [["TTB",1],["Kbank",300],["KTB",2000],["BBL",2000],["GSB",19000],["SCB",1],["BAY",5000],["สหกรณ์ AIS",21000]] },
-  { key: "invest", label: "สินทรัพย์ลงทุน", value: 1545424, color: "#4F8467",
-    items: [["หุ้นสหกรณ์ AIS",726000],["หุ้นสหกรณ์ SCB",33000],["กองทุนสำรองเลี้ยงชีพ",786424]] },
-  { key: "personal", label: "สินทรัพย์ส่วนตัว", value: 15060000, color: "#2F5D46",
-    items: [["บ้าน / คอนโด (อยู่อาศัย)",15000000],["ทองคำ",60000]] },
-];
-const TOTAL_ASSETS = ASSET_GROUPS.reduce((s, g) => s + g.value, 0);
+function parseNum(str, fallback) {
+  if (str === undefined || str === null || str === "") return fallback;
+  const cleaned = String(str).replace(/,/g, "").trim();
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? fallback : n;
+}
+function makeId() {
+  return `item-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
-const LIABILITY_GROUPS = [
-  { key: "short", label: "หนี้สินระยะสั้น", value: 1407000, color: "#CB8567",
-    items: [["บัตรกดเงินสด KKP",417000],["บัตรกดเงินสด CIMB",400000],["บัตรกดเงินสด UOB",372000],["บัตรกดเงินสด TMB",218000]] },
-  { key: "long", label: "หนี้สินระยะยาว", value: 13566000, color: "#7A2E1F",
-    items: [["หนี้คอนโด",4065000],["หนี้บ้าน",3087000],["สินเชื่อส่วนบุคคล",5860000],["หนี้สหกรณ์",554000]] },
-];
-const TOTAL_LIAB = LIABILITY_GROUPS.reduce((s, g) => s + g.value, 0);
-const NET_WORTH = TOTAL_ASSETS - TOTAL_LIAB;
+// ---------- Thai calendar helpers ----------
+const THAI_MONTHS_ABBR = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
+const THAI_MONTHS_FULL = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"];
+const NOW = new Date();
+const CURRENT_BE_YEAR = NOW.getFullYear() + 543;
+const CURRENT_MONTH_FULL = `${THAI_MONTHS_FULL[NOW.getMonth()]} ${CURRENT_BE_YEAR}`;
+const CURRENT_MONTH_ABBR = `${THAI_MONTHS_ABBR[NOW.getMonth()]} ${CURRENT_BE_YEAR}`;
+// เดือนของเช็คลิสต์ คำนวณจากวันที่ปัจจุบันเสมอ พอขึ้นวันที่ 1 ของเดือนใหม่
+// คีย์นี้จะเปลี่ยนไปเอง ทำให้ไม่มีข้อมูลติ๊กเก่าอยู่ในคีย์ใหม่ — เช็คลิสต์
+// จึงว่างพร้อมให้ติ๊กใหม่ของเดือนนั้นโดยอัตโนมัติ
+const MONTH_KEY = `${CURRENT_BE_YEAR}-${String(NOW.getMonth() + 1).padStart(2, "0")}`;
 
-const INCOME_JULY = { total: 132160, items: [["บริษัท 1 (เงินเดือน)",102160],["รายได้เสริม",30000]] };
+function formatThaiDateTime(d) {
+  const day = d.getDate();
+  const month = THAI_MONTHS_ABBR[d.getMonth()];
+  const year = d.getFullYear() + 543;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${day} ${month} ${year} เวลา ${hh}:${min} น.`;
+}
 
-const FIXED_EXPENSE_GROUPS = [
-  { key: "tax", label: "ภาษี/ประกันสังคม", value: 9359, color: "#7A4F22",
-    items: [["ภาษีหัก ณ ที่จ่าย",8484],["ประกันสังคม",875]] },
-  { key: "save", label: "ออม/กองทุนเกษียณ", value: 17216, color: "#B07E45",
-    items: [["กองทุนสำรองเลี้ยงชีพ",10216],["สหกรณ์ออมทรัพย์ (1)",1000],["สหกรณ์ออมทรัพย์ (2)",5000],["เงินฝากธนาคาร AIS",1000]] },
-  { key: "debt", label: "ผ่อนชำระหนี้", value: 88094, color: "#8A5A2B",
-    items: [["ค่าผ่อนบ้าน/คอนโด",18700],["ค่าผ่อนคอนโด",28000],["สถาบันการเงิน TMB",5950],["สถาบันการเงิน KKP",8864],["สถาบันการเงิน CIMB",9380],["สถาบันการเงิน UOB",9300],["ค่าผ่อนหนี้สหกรณ์",7900]] },
-];
-const FIXED_TOTAL = FIXED_EXPENSE_GROUPS.reduce((s, g) => s + g.value, 0);
-
-const VARIABLE_EXPENSE_GROUPS = [
-  { key: "var-household", label: "ของใช้ในบ้าน", value: 6715, color: "#7A4F22",
-    items: [["บัตรเครดิต · Dreamex50 (ผ่อน 8/10)",3772],["บัตรเครดิต · DreameH16 (ผ่อน 5/10)",2358],["บัตรเครดิต · URPet (ผ่อน 5/10)",585]] },
-  { key: "var-repair", label: "ซ่อมแซมบ้าน", value: 5000, color: "#8A5A2B",
-    items: [["บัตรเครดิต · SECOM",5000]] },
-  { key: "var-electric", label: "ไฟฟ้า", value: 4300, color: "#9C6B37",
-    items: [["บัตรเครดิต · H43",4000],["บัตรเครดิต · คอนโด",300]] },
-  { key: "var-phone", label: "โทรศัพท์", value: 3900, color: "#B07E45",
-    items: [["บัตรเครดิต · Dad",600],["บัตรเครดิต (ไม่ระบุร้านค้า)",3300]] },
-  { key: "var-insurance", label: "ประกันชีวิต", value: 3700, color: "#C99A57",
-    items: [["บัตรเครดิต · AIA",3700]] },
-  { key: "var-furniture", label: "เฟอร์นิเจอร์", value: 2442, color: "#D9AF78",
-    items: [["บัตรเครดิต · Coway",1520],["บัตรเครดิต · LG",922]] },
-  { key: "var-app", label: "แอปพลิเคชั่น", value: 947, color: "#E6C596",
-    items: [["บัตรเครดิต · YouTube",399],["บัตรเครดิต · Google One",350],["บัตรเครดิต · Netflix",99],["บัตรเครดิต · iCloud",99]] },
-];
-const VARIABLE_TOTAL = VARIABLE_EXPENSE_GROUPS.reduce((s, g) => s + g.value, 0);
-
-const TOTAL_EXPENSE = FIXED_TOTAL + VARIABLE_TOTAL;
-const NET_CASHFLOW = INCOME_JULY.total - TOTAL_EXPENSE;
-
-const EXPENSE_SPLIT = [
-  { key: "fixed", label: "รายจ่ายคงที่ (วันที่ 1)", value: FIXED_TOTAL, color: "#8A5A2B" },
-  { key: "variable", label: "รายจ่ายผันแปรรายวัน", value: VARIABLE_TOTAL, color: "#D9AF78" },
+// ---------- DEFAULT DATA (used only until the person edits & saves) ----------
+const DEFAULT_ASSET_GROUPS = [
+  { key: "liquid", label: "สินทรัพย์สภาพคล่อง", color: "#8AB59B",
+    items: [["TTB",1],["Kbank",300],["KTB",2000],["BBL",2000],["GSB",19000],["SCB",1],["BAY",5000],["สหกรณ์ AIS",21000]]
+      .map(([name, value], i) => ({ id: `liquid-${i}`, name, value })) },
+  { key: "invest", label: "สินทรัพย์ลงทุน", color: "#4F8467",
+    items: [["หุ้นสหกรณ์ AIS",726000],["หุ้นสหกรณ์ SCB",33000],["กองทุนสำรองเลี้ยงชีพ",786424]]
+      .map(([name, value], i) => ({ id: `invest-${i}`, name, value })) },
+  { key: "personal", label: "สินทรัพย์ส่วนตัว", color: "#2F5D46",
+    items: [["บ้าน / คอนโด (อยู่อาศัย)",15000000],["ทองคำ",60000]]
+      .map(([name, value], i) => ({ id: `personal-${i}`, name, value })) },
 ];
 
-const MONTH_KEY = "2569-07";
+const DEFAULT_LIABILITY_GROUPS = [
+  { key: "short", label: "หนี้สินระยะสั้น", color: "#CB8567",
+    items: [["บัตรกดเงินสด KKP",417000],["บัตรกดเงินสด CIMB",400000],["บัตรกดเงินสด UOB",372000],["บัตรกดเงินสด TMB",218000],["หนี้สหกรณ์",554000]]
+      .map(([name, value], i) => ({ id: `short-${i}`, name, value })) },
+  { key: "long", label: "หนี้สินระยะยาว", color: "#7A2E1F",
+    items: [["หนี้คอนโด",4065000],["หนี้บ้าน",3087000],["สินเชื่อส่วนบุคคล",5860000]]
+      .map(([name, value], i) => ({ id: `long-${i}`, name, value })) },
+];
+
+const DEFAULT_FIXED_EXPENSE_GROUPS = [
+  { key: "tax", label: "ภาษี/ประกันสังคม", color: "#7A4F22",
+    items: [["ภาษีหัก ณ ที่จ่าย",8484],["ประกันสังคม",875]]
+      .map(([name, value], i) => ({ id: `tax-${i}`, name, value })) },
+  { key: "save", label: "ออม/กองทุนเกษียณ", color: "#B07E45",
+    items: [["กองทุนสำรองเลี้ยงชีพ",10216],["สหกรณ์ออมทรัพย์ (1)",1000],["สหกรณ์ออมทรัพย์ (2)",5000],["เงินฝากธนาคาร AIS",1000]]
+      .map(([name, value], i) => ({ id: `save-${i}`, name, value })) },
+  { key: "debt", label: "ผ่อนชำระหนี้", color: "#8A5A2B",
+    items: [["ค่าผ่อนบ้าน/คอนโด",18700],["ค่าผ่อนคอนโด",28000],["สถาบันการเงิน TMB",5950],["สถาบันการเงิน KKP",8864],["สถาบันการเงิน CIMB",9380],["สถาบันการเงิน UOB",9300],["ค่าผ่อนหนี้สหกรณ์",7900]]
+      .map(([name, value], i) => ({ id: `debt-${i}`, name, value })) },
+];
+
+const DEFAULT_VARIABLE_EXPENSE_GROUPS = [
+  { key: "var-household", label: "ของใช้ในบ้าน", color: "#7A4F22",
+    items: [["บัตรเครดิต · Dreamex50 (ผ่อน 8/10)",3772],["บัตรเครดิต · DreameH16 (ผ่อน 5/10)",2358],["บัตรเครดิต · URPet (ผ่อน 5/10)",585]]
+      .map(([name, value], i) => ({ id: `var-household-${i}`, name, value })) },
+  { key: "var-repair", label: "ซ่อมแซมบ้าน", color: "#8A5A2B",
+    items: [["บัตรเครดิต · SECOM",5000]].map(([name, value], i) => ({ id: `var-repair-${i}`, name, value })) },
+  { key: "var-electric", label: "ไฟฟ้า", color: "#9C6B37",
+    items: [["บัตรเครดิต · H43",4000],["บัตรเครดิต · คอนโด",300]]
+      .map(([name, value], i) => ({ id: `var-electric-${i}`, name, value })) },
+  { key: "var-phone", label: "โทรศัพท์", color: "#B07E45",
+    items: [["บัตรเครดิต · Dad",600],["บัตรเครดิต (ไม่ระบุร้านค้า)",3300]]
+      .map(([name, value], i) => ({ id: `var-phone-${i}`, name, value })) },
+  { key: "var-insurance", label: "ประกันชีวิต", color: "#C99A57",
+    items: [["บัตรเครดิต · AIA",3700]].map(([name, value], i) => ({ id: `var-insurance-${i}`, name, value })) },
+  { key: "var-furniture", label: "เฟอร์นิเจอร์", color: "#D9AF78",
+    items: [["บัตรเครดิต · Coway",1520],["บัตรเครดิต · LG",922]]
+      .map(([name, value], i) => ({ id: `var-furniture-${i}`, name, value })) },
+  { key: "var-app", label: "แอปพลิเคชั่น", color: "#E6C596",
+    items: [["บัตรเครดิต · YouTube",399],["บัตรเครดิต · Google One",350],["บัตรเครดิต · Netflix",99],["บัตรเครดิต · iCloud",99]]
+      .map(([name, value], i) => ({ id: `var-app-${i}`, name, value })) },
+];
+
+const INCOME = { total: 132160, items: [["บริษัท 1 (เงินเดือน)",102160],["รายได้เสริม",30000]] };
+
 // 🔧 SETUP: paste your Google Apps Script Web App URL here (ends in /exec).
-// See the setup steps provided alongside this file. Until you do, checklist
-// data is just kept in this browser (localStorage) as a fallback.
+// Until you do, all data is kept in this browser (localStorage) as a fallback.
 const DRIVE_API_URL = "https://script.google.com/macros/s/AKfycbx7icu7pxNBl1guS0pMXkzZ8F7KMKVIIL2Yvw7O5SJ6AJwJ-dM6hWJ3pSwA8mo8QdPK/exec";
 const DRIVE_CONFIGURED = DRIVE_API_URL && DRIVE_API_URL.indexOf("PASTE_YOUR") === -1;
 const LOCAL_FALLBACK_KEY = "happy-money-checklist-fallback";
-const CHECKLIST_ITEMS = [
-  ...FIXED_EXPENSE_GROUPS.flatMap((g) => g.items.map(([name, val], i) => ({ key: `${g.key}-${i}`, name, val }))),
-  ...VARIABLE_EXPENSE_GROUPS.flatMap((g) => g.items.map(([name, val], i) => ({ key: `${g.key}-${i}`, name, val }))),
-];
+
+// Recomputes each group's total from its (possibly edited) items.
+function withTotals(groups) {
+  return groups.map((g) => ({ ...g, value: g.items.reduce((s, it) => s + (Number(it.value) || 0), 0) }));
+}
+// While a section is being edited, show live totals from the in-progress draft
+// (string values); otherwise just show the saved totals.
+function liveGroups(baseGroupsT, editing, draft) {
+  if (!editing || !draft) return baseGroupsT;
+  return draft.map((g) => {
+    const items = g.items.map((it) => ({ ...it, value: parseNum(it.value, 0) }));
+    const value = items.reduce((s, it) => s + it.value, 0);
+    return { ...g, items, value };
+  });
+}
+function cloneAsDraft(groups) {
+  return groups.map((g) => ({ ...g, items: g.items.map((it) => ({ ...it, value: String(it.value) })) }));
+}
 
 // ---------- small building blocks ----------
 function CompositionBar({ groups, total }) {
   return (
     <div style={{ display: "flex", width: "100%", height: 14, borderRadius: 999, overflow: "hidden", background: "#EDE8DC" }}>
       {groups.map((g) => (
-        <div key={g.key} style={{ width: `${(g.value / total) * 100}%`, background: g.color }} title={g.label} />
+        <div key={g.key} style={{ width: `${total ? (g.value / total) * 100 : 0}%`, background: g.color }} title={g.label} />
       ))}
     </div>
   );
 }
 
+// Read-only (or checkable) list of groups + items. Used for assets, liabilities,
+// and — when not being edited — the fixed/variable expense checklists.
 function GroupList({ groups, total, checkable = false, paid = {}, onToggle }) {
   const [open, setOpen] = useState(null);
   return (
@@ -126,11 +169,13 @@ function GroupList({ groups, total, checkable = false, paid = {}, onToggle }) {
           </button>
           {open === g.key && (
             <div style={{ padding: "0 2px 12px 22px", display: "flex", flexDirection: "column", gap: 8 }}>
-              {g.items.map(([name, val], i) => {
-                const itemKey = `${g.key}-${i}`;
-                const isPaid = checkable && !!paid[itemKey];
+              {g.items.length === 0 && (
+                <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#A79E8E" }}>ไม่มีรายการ</div>
+              )}
+              {g.items.map((it) => {
+                const isPaid = checkable && !!paid[it.id];
                 return (
-                  <div key={name} onClick={checkable ? () => onToggle(itemKey) : undefined}
+                  <div key={it.id} onClick={checkable ? () => onToggle(it.id) : undefined}
                     style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, cursor: checkable ? "pointer" : "default" }}>
                     <span style={{ display: "flex", alignItems: "center", gap: 8, color: isPaid ? "#A79E8E" : "#6B6459" }}>
                       {checkable && (
@@ -138,9 +183,9 @@ function GroupList({ groups, total, checkable = false, paid = {}, onToggle }) {
                           {isPaid ? "✓" : ""}
                         </span>
                       )}
-                      <span style={{ textDecoration: isPaid ? "line-through" : "none" }}>{name}</span>
+                      <span style={{ textDecoration: isPaid ? "line-through" : "none" }}>{it.name || "(ไม่มีชื่อ)"}</span>
                     </span>
-                    <span style={{ color: isPaid ? "#A79E8E" : "#202B29", textDecoration: isPaid ? "line-through" : "none" }}>{fmt(val)}</span>
+                    <span style={{ color: isPaid ? "#A79E8E" : "#202B29", textDecoration: isPaid ? "line-through" : "none" }}>{fmt(it.value)}</span>
                   </div>
                 );
               })}
@@ -149,6 +194,71 @@ function GroupList({ groups, total, checkable = false, paid = {}, onToggle }) {
         </div>
       ))}
     </div>
+  );
+}
+
+const inputTextStyle = { flex: 1, minWidth: 0, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8" };
+const inputNumberStyle = { width: 108, textAlign: "right", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8", flexShrink: 0 };
+const removeBtnStyle = { width: 28, height: 28, borderRadius: 7, border: "1px solid #E0A9A0", background: "#FBEDEA", color: "#9A3B2E", cursor: "pointer", fontSize: 13, flexShrink: 0 };
+const addBtnStyle = { marginTop: 8, background: "none", border: "1px dashed #C9C2B2", borderRadius: 7, padding: "6px 10px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", cursor: "pointer" };
+const editBtnStyle = { background: "none", border: "1px solid #C9C2B2", borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", cursor: "pointer", whiteSpace: "nowrap" };
+const saveBtnStyle = { background: "#2F5D46", border: "1px solid #2F5D46", borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#fff", cursor: "pointer" };
+const cancelBtnStyle = { background: "none", border: "1px solid #C9C2B2", borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", cursor: "pointer" };
+const hintStyle = { fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#AD8A2E", marginTop: 6 };
+
+// Editable version of a group list: number input always, name input + add/remove
+// only when the section supports full item management (the expense checklists).
+function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveItem, editableName = true, allowAddRemove = true }) {
+  return (
+    <div style={{ marginTop: 14 }}>
+      {groups.map((g) => {
+        const groupTotal = g.items.reduce((s, it) => s + parseNum(it.value, 0), 0);
+        return (
+          <div key={g.key} style={{ border: "1px solid #E6E0D2", borderRadius: 12, padding: 12, marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 3, background: g.color, flexShrink: 0 }} />
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 14, color: "#202B29" }}>{g.label}</span>
+              </span>
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, fontWeight: 700, color: "#202B29" }}>{fmt(groupTotal)}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {g.items.map((it) => (
+                <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {editableName ? (
+                    <input type="text" value={it.name} placeholder="ชื่อรายการ"
+                      onChange={(e) => onChangeName(g.key, it.id, e.target.value)}
+                      style={inputTextStyle} />
+                  ) : (
+                    <span style={{ flex: 1, minWidth: 0, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#6B6459" }}>{it.name}</span>
+                  )}
+                  <input type="number" inputMode="decimal" value={it.value} placeholder="0"
+                    onChange={(e) => onChangeValue(g.key, it.id, e.target.value)}
+                    style={inputNumberStyle} />
+                  {allowAddRemove && (
+                    <button onClick={() => onRemoveItem(g.key, it.id)} title="ลบรายการ" style={removeBtnStyle}>✕</button>
+                  )}
+                </div>
+              ))}
+            </div>
+            {allowAddRemove && (
+              <button onClick={() => onAddItem(g.key)} style={addBtnStyle}>+ เพิ่มรายการ</button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function EditToggle({ editing, onStart, onSave, onCancel, startLabel }) {
+  return editing ? (
+    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+      <button onClick={onSave} style={saveBtnStyle}>บันทึก</button>
+      <button onClick={onCancel} style={cancelBtnStyle}>ยกเลิก</button>
+    </div>
+  ) : (
+    <button onClick={onStart} style={editBtnStyle}>{startLabel}</button>
   );
 }
 
@@ -172,12 +282,25 @@ function SectionTitle({ eyebrow, title }) {
 }
 
 function Dashboard() {
-  // Checklist state, synced to Google Drive via a small Google Apps Script "bridge"
-  // (see setup instructions). Falls back to this browser's localStorage until the
-  // DRIVE_API_URL below is configured, so the app still works in the meantime.
+  // allData persists (via Google Drive bridge, or localStorage as a fallback):
+  //   allData[MONTH_KEY]     -> which checklist items are ticked this month, by item id
+  //   allData.assetGroups    -> saved asset groups (once edited)
+  //   allData.liabilityGroups-> saved liability groups (once edited)
+  //   allData.fixedGroups    -> saved fixed-expense groups (once edited/added/removed)
+  //   allData.variableGroups -> saved variable-expense groups (once edited/added/removed)
+  //   allData.lastUpdated    -> ISO timestamp of the last edit or checkbox tick
   const [allData, setAllData] = useState({});
   const [loaded, setLoaded] = useState(false);
   const [syncError, setSyncError] = useState(false);
+
+  const [editingAssets, setEditingAssets] = useState(false);
+  const [assetDraft, setAssetDraft] = useState(null);
+  const [editingLiabilities, setEditingLiabilities] = useState(false);
+  const [liabilityDraft, setLiabilityDraft] = useState(null);
+  const [editingFixed, setEditingFixed] = useState(false);
+  const [fixedDraft, setFixedDraft] = useState(null);
+  const [editingVariable, setEditingVariable] = useState(false);
+  const [variableDraft, setVariableDraft] = useState(null);
 
   useEffect(() => {
     let mounted = true;
@@ -197,93 +320,195 @@ function Dashboard() {
     return () => { mounted = false; };
   }, []);
 
+  // Every call to persist() represents a real update (amount edit or checkbox
+  // tick), so it also stamps "last updated" for the header.
   const persist = (nextAllData) => {
-    setAllData(nextAllData);
+    const stamped = { ...nextAllData, lastUpdated: new Date().toISOString() };
+    setAllData(stamped);
     if (!DRIVE_CONFIGURED) {
-      try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(nextAllData)); } catch (e) {}
+      try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(stamped)); } catch (e) {}
       return;
     }
     setSyncError(false);
     fetch(DRIVE_API_URL, {
       method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids a CORS preflight
-      body: JSON.stringify(nextAllData),
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(stamped),
     }).catch(() => setSyncError(true));
   };
 
-  const paid = allData[MONTH_KEY] || {};
+  const assetGroups = allData.assetGroups || DEFAULT_ASSET_GROUPS;
+  const liabilityGroups = allData.liabilityGroups || DEFAULT_LIABILITY_GROUPS;
+  const fixedGroups = allData.fixedGroups || DEFAULT_FIXED_EXPENSE_GROUPS;
+  const variableGroups = allData.variableGroups || DEFAULT_VARIABLE_EXPENSE_GROUPS;
 
-  const togglePaid = (key) => {
+  const assetGroupsT = withTotals(assetGroups);
+  const liabilityGroupsT = withTotals(liabilityGroups);
+  const fixedGroupsT = withTotals(fixedGroups);
+  const variableGroupsT = withTotals(variableGroups);
+
+  // Live display groups: reflect the in-progress draft while editing, saved data otherwise.
+  const displayAssetGroups = liveGroups(assetGroupsT, editingAssets, assetDraft);
+  const displayLiabilityGroups = liveGroups(liabilityGroupsT, editingLiabilities, liabilityDraft);
+  const displayFixedGroups = liveGroups(fixedGroupsT, editingFixed, fixedDraft);
+  const displayVariableGroups = liveGroups(variableGroupsT, editingVariable, variableDraft);
+
+  const totalAssets = displayAssetGroups.reduce((s, g) => s + g.value, 0);
+  const totalLiab = displayLiabilityGroups.reduce((s, g) => s + g.value, 0);
+  const netWorth = totalAssets - totalLiab;
+  const fixedTotal = displayFixedGroups.reduce((s, g) => s + g.value, 0);
+  const variableTotal = displayVariableGroups.reduce((s, g) => s + g.value, 0);
+  const totalExpense = fixedTotal + variableTotal;
+  const netCashflow = INCOME.total - totalExpense;
+  const expenseSplit = [
+    { key: "fixed", label: "รายจ่ายคงที่ (วันที่ 1)", value: fixedTotal, color: "#8A5A2B" },
+    { key: "variable", label: "รายจ่ายผันแปรรายวัน", value: variableTotal, color: "#D9AF78" },
+  ];
+
+  // Checklist always reflects the saved (non-draft) item set.
+  const checklistItems = [...fixedGroups.flatMap((g) => g.items), ...variableGroups.flatMap((g) => g.items)];
+  const paid = allData[MONTH_KEY] || {};
+  const togglePaid = (id) => {
     const month = { ...(allData[MONTH_KEY] || {}) };
-    month[key] = !month[key];
+    month[id] = !month[id];
     persist({ ...allData, [MONTH_KEY]: month });
   };
+  const resetChecklist = () => persist({ ...allData, [MONTH_KEY]: {} });
+  const paidCount = checklistItems.filter((it) => paid[it.id]).length;
+  const paidSum = checklistItems.filter((it) => paid[it.id]).reduce((s, it) => s + (Number(it.value) || 0), 0);
 
-  const resetChecklist = () => {
-    persist({ ...allData, [MONTH_KEY]: {} });
+  // ---- assets (full CRUD: add / remove / rename / amount) ----
+  const startEditAssets = () => { setAssetDraft(cloneAsDraft(assetGroups)); setEditingAssets(true); };
+  const updateAssetName = (gk, id, name) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
+  const updateAssetValue = (gk, id, value) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
+  const addAssetItem = (gk) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
+  const removeAssetItem = (gk, id) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const cancelEditAssets = () => { setEditingAssets(false); setAssetDraft(null); };
+  const saveEditAssets = () => {
+    const finalGroups = assetDraft.map((g) => ({ ...g, items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    persist({ ...allData, assetGroups: finalGroups });
+    setEditingAssets(false); setAssetDraft(null);
   };
 
-  const paidCount = CHECKLIST_ITEMS.filter((it) => paid[it.key]).length;
-  const paidSum = CHECKLIST_ITEMS.filter((it) => paid[it.key]).reduce((s, it) => s + it.val, 0);
+  // ---- liabilities (full CRUD: add / remove / rename / amount, same as assets) ----
+  const startEditLiabilities = () => { setLiabilityDraft(cloneAsDraft(liabilityGroups)); setEditingLiabilities(true); };
+  const updateLiabilityName = (gk, id, name) => setLiabilityDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
+  const updateLiabilityValue = (gk, id, value) => setLiabilityDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
+  const addLiabilityItem = (gk) => setLiabilityDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
+  const removeLiabilityItem = (gk, id) => setLiabilityDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const cancelEditLiabilities = () => { setEditingLiabilities(false); setLiabilityDraft(null); };
+  const saveEditLiabilities = () => {
+    const finalGroups = liabilityDraft.map((g) => ({ ...g, items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    persist({ ...allData, liabilityGroups: finalGroups });
+    setEditingLiabilities(false); setLiabilityDraft(null);
+  };
+
+  // ---- fixed expenses (full CRUD: add / remove / rename / amount) ----
+  const startEditFixed = () => { setFixedDraft(cloneAsDraft(fixedGroups)); setEditingFixed(true); };
+  const updateFixedName = (gk, id, name) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
+  const updateFixedValue = (gk, id, value) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
+  const addFixedItem = (gk) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
+  const removeFixedItem = (gk, id) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const cancelEditFixed = () => { setEditingFixed(false); setFixedDraft(null); };
+  const saveEditFixed = () => {
+    const finalGroups = fixedDraft.map((g) => ({ ...g, items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    persist({ ...allData, fixedGroups: finalGroups });
+    setEditingFixed(false); setFixedDraft(null);
+  };
+
+  // ---- variable expenses (full CRUD: add / remove / rename / amount) ----
+  const startEditVariable = () => { setVariableDraft(cloneAsDraft(variableGroups)); setEditingVariable(true); };
+  const updateVariableName = (gk, id, name) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
+  const updateVariableValue = (gk, id, value) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
+  const addVariableItem = (gk) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
+  const removeVariableItem = (gk, id) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const cancelEditVariable = () => { setEditingVariable(false); setVariableDraft(null); };
+  const saveEditVariable = () => {
+    const finalGroups = variableDraft.map((g) => ({ ...g, items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    persist({ ...allData, variableGroups: finalGroups });
+    setEditingVariable(false); setVariableDraft(null);
+  };
+
+  const lastUpdatedLabel = allData.lastUpdated ? formatThaiDateTime(new Date(allData.lastUpdated)) : "ยังไม่มีการอัปเดตข้อมูล";
+  const liquidGroup = displayAssetGroups.find((g) => g.key === "liquid") || displayAssetGroups[0];
 
   return (
     <div style={{ minHeight: "100vh", background: "#F6F3EC", padding: "28px 16px 60px", display: "flex", justifyContent: "center" }}>
       <div style={{ width: "100%", maxWidth: 480 }}>
         <div style={{ marginBottom: 22 }}>
           <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, letterSpacing: "0.1em", color: "#AD8A2E", fontWeight: 600, textTransform: "uppercase" }}>
-            HAPPY MONEY · ข้อมูลล่าสุด 6 เม.ย. 2569
+            HAPPY MONEY · ข้อมูลล่าสุด {lastUpdatedLabel}
           </div>
-          <h1 style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 24, color: "#202B29", margin: "6px 0 0" }}>ภาพรวมการเงินของฉัน</h1>
+          <h1 style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 24, color: "#202B29", margin: "6px 0 0" }}>ภาพรวมการเงิน</h1>
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459", marginTop: 4 }}>
+            Dashboard ประจำเดือน{CURRENT_MONTH_FULL}
+          </div>
         </div>
 
         <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 18, padding: "20px 20px 22px", marginBottom: 16 }}>
           <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459" }}>ความมั่งคั่งสุทธิ (สินทรัพย์ − หนี้สิน)</div>
-          <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 34, color: "#202B29", margin: "4px 0 16px" }}>{fmt(NET_WORTH)}</div>
+          <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 34, color: "#202B29", margin: "4px 0 16px" }}>{fmt(netWorth)}</div>
           <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, marginBottom: 5 }}>
             <span style={{ color: "#2F5D46", fontWeight: 600 }}>สินทรัพย์รวม</span>
-            <span style={{ color: "#202B29", fontWeight: 700 }}>{fmt(TOTAL_ASSETS)}</span>
+            <span style={{ color: "#202B29", fontWeight: 700 }}>{fmt(totalAssets)}</span>
           </div>
           <div style={{ width: "100%", height: 10, borderRadius: 999, background: "#EDE8DC", overflow: "hidden" }}>
             <div style={{ width: "100%", height: "100%", background: "#2F5D46" }} />
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, margin: "12px 0 5px" }}>
             <span style={{ color: "#7A2E1F", fontWeight: 600 }}>หนี้สินรวม</span>
-            <span style={{ color: "#202B29", fontWeight: 700 }}>{fmt(TOTAL_LIAB)}</span>
+            <span style={{ color: "#202B29", fontWeight: 700 }}>{fmt(totalLiab)}</span>
           </div>
           <div style={{ width: "100%", height: 10, borderRadius: 999, background: "#EDE8DC", overflow: "hidden" }}>
-            <div style={{ width: `${(TOTAL_LIAB / TOTAL_ASSETS) * 100}%`, height: "100%", background: "#7A2E1F" }} />
+            <div style={{ width: `${totalAssets ? (totalLiab / totalAssets) * 100 : 0}%`, height: "100%", background: "#7A2E1F" }} />
           </div>
           <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459", marginTop: 10 }}>
-            หนี้สินคิดเป็น {pct(TOTAL_LIAB, TOTAL_ASSETS)} ของสินทรัพย์รวม
+            หนี้สินคิดเป็น {pct(totalLiab, totalAssets)} ของสินทรัพย์รวม
           </div>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 24 }}>
-          <StatCard label="รายรับ ก.ค. 2569" value={fmt(INCOME_JULY.total)} color="#1F6E6B" />
-          <StatCard label="รายจ่าย ก.ค. 2569" value={fmt(TOTAL_EXPENSE)} sub={`คงที่ ${fmt(FIXED_TOTAL)} + ผันแปร ${fmt(VARIABLE_TOTAL)}`} color="#8A5A2B" />
-          <StatCard label="คงเหลือสุทธิเดือนนี้" value={fmt(NET_CASHFLOW)} sub={NET_CASHFLOW >= 0 ? `อัตราการออม ${pct(NET_CASHFLOW, INCOME_JULY.total)}` : "รายจ่ายสูงกว่ารายรับเดือนนี้"} color={NET_CASHFLOW >= 0 ? "#202B29" : "#7A2E1F"} />
-          <StatCard label="สินทรัพย์สภาพคล่อง" value={fmt(ASSET_GROUPS[0].value)} sub="เงินสด/บัญชีออมทรัพย์" color="#202B29" />
+          <StatCard label={`รายรับ ${CURRENT_MONTH_ABBR}`} value={fmt(INCOME.total)} color="#1F6E6B" />
+          <StatCard label={`รายจ่าย ${CURRENT_MONTH_ABBR}`} value={fmt(totalExpense)} sub={`คงที่ ${fmt(fixedTotal)} + ผันแปร ${fmt(variableTotal)}`} color="#8A5A2B" />
+          <StatCard label="คงเหลือสุทธิเดือนนี้" value={fmt(netCashflow)} sub={netCashflow >= 0 ? `อัตราการออม ${pct(netCashflow, INCOME.total)}` : "รายจ่ายสูงกว่ารายรับเดือนนี้"} color={netCashflow >= 0 ? "#202B29" : "#7A2E1F"} />
+          <StatCard label="สินทรัพย์สภาพคล่อง" value={fmt(liquidGroup ? liquidGroup.value : 0)} sub="เงินสด/บัญชีออมทรัพย์" color="#202B29" />
         </div>
 
         <div style={{ marginBottom: 24 }}>
-          <SectionTitle eyebrow="สินทรัพย์" title={`รวม ${fmt(TOTAL_ASSETS)}`} />
-          <CompositionBar groups={ASSET_GROUPS} total={TOTAL_ASSETS} />
-          <GroupList groups={ASSET_GROUPS} total={TOTAL_ASSETS} />
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <SectionTitle eyebrow="สินทรัพย์" title={`รวม ${fmt(totalAssets)}`} />
+            <EditToggle editing={editingAssets} onStart={startEditAssets} onSave={saveEditAssets} onCancel={cancelEditAssets} startLabel="แก้ไขรายการ" />
+          </div>
+          <CompositionBar groups={displayAssetGroups} total={totalAssets} />
+          {editingAssets ? (
+            <GroupEditor groups={assetDraft} onChangeValue={updateAssetValue} onChangeName={updateAssetName} onAddItem={addAssetItem} onRemoveItem={removeAssetItem} />
+          ) : (
+            <GroupList groups={displayAssetGroups} total={totalAssets} />
+          )}
+          {editingAssets && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
         </div>
 
         <div style={{ marginBottom: 24 }}>
-          <SectionTitle eyebrow="หนี้สิน" title={`รวม ${fmt(TOTAL_LIAB)}`} />
-          <CompositionBar groups={LIABILITY_GROUPS} total={TOTAL_LIAB} />
-          <GroupList groups={LIABILITY_GROUPS} total={TOTAL_LIAB} />
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <SectionTitle eyebrow="หนี้สิน" title={`รวม ${fmt(totalLiab)}`} />
+            <EditToggle editing={editingLiabilities} onStart={startEditLiabilities} onSave={saveEditLiabilities} onCancel={cancelEditLiabilities} startLabel="แก้ไขรายการ" />
+          </div>
+          <CompositionBar groups={displayLiabilityGroups} total={totalLiab} />
+          {editingLiabilities ? (
+            <GroupEditor groups={liabilityDraft} onChangeValue={updateLiabilityValue} onChangeName={updateLiabilityName} onAddItem={addLiabilityItem} onRemoveItem={removeLiabilityItem} />
+          ) : (
+            <GroupList groups={displayLiabilityGroups} total={totalLiab} />
+          )}
+          {editingLiabilities && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
         </div>
 
         <div style={{ marginBottom: 24 }}>
-          <SectionTitle eyebrow="กระแสเงินสด · กรกฎาคม 2569" title="รายรับ vs รายจ่าย" />
+          <SectionTitle eyebrow={`กระแสเงินสด · ${CURRENT_MONTH_FULL}`} title="รายรับ vs รายจ่าย" />
           <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16 }}>
             <div style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, marginBottom: 5 }}>
                 <span style={{ color: "#1F6E6B", fontWeight: 600 }}>รายรับ</span>
-                <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(INCOME_JULY.total)}</span>
+                <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(INCOME.total)}</span>
               </div>
               <div style={{ width: "100%", height: 12, borderRadius: 999, background: "#EDE8DC" }}>
                 <div style={{ width: "100%", height: "100%", borderRadius: 999, background: "#1F6E6B" }} />
@@ -292,36 +517,36 @@ function Dashboard() {
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, marginBottom: 5 }}>
                 <span style={{ color: "#8A5A2B", fontWeight: 600 }}>รายจ่าย</span>
-                <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(TOTAL_EXPENSE)}</span>
+                <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(totalExpense)}</span>
               </div>
               <div style={{ width: "100%", height: 12, borderRadius: 999, background: "#EDE8DC" }}>
-                <div style={{ width: `${Math.min((TOTAL_EXPENSE / INCOME_JULY.total) * 100, 100)}%`, height: "100%", borderRadius: 999, background: "#8A5A2B" }} />
+                <div style={{ width: `${Math.min((totalExpense / INCOME.total) * 100, 100)}%`, height: "100%", borderRadius: 999, background: "#8A5A2B" }} />
               </div>
             </div>
             <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E6E0D2", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459" }}>คงเหลือสุทธิ</span>
-              <span style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 20, color: NET_CASHFLOW >= 0 ? "#202B29" : "#7A2E1F" }}>{fmt(NET_CASHFLOW)}</span>
+              <span style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 20, color: netCashflow >= 0 ? "#202B29" : "#7A2E1F" }}>{fmt(netCashflow)}</span>
             </div>
-            {NET_CASHFLOW < 0 && (
+            {netCashflow < 0 && (
               <div style={{ marginTop: 6, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#7A2E1F" }}>
-                รายจ่ายรวมสูงกว่ารายรับ {fmt(Math.abs(NET_CASHFLOW))} บาทในเดือนนี้
+                รายจ่ายรวมสูงกว่ารายรับ {fmt(Math.abs(netCashflow))} บาทในเดือนนี้
               </div>
             )}
           </div>
         </div>
 
         <div style={{ marginBottom: 8 }}>
-          <SectionTitle eyebrow="รายจ่ายแยกตามหมวด" title={`รวม ${fmt(TOTAL_EXPENSE)}`} />
-          <CompositionBar groups={EXPENSE_SPLIT} total={TOTAL_EXPENSE} />
+          <SectionTitle eyebrow="รายจ่ายแยกตามหมวด" title={`รวม ${fmt(totalExpense)}`} />
+          <CompositionBar groups={expenseSplit} total={totalExpense} />
           <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459", margin: "6px 0 18px" }}>
-            <span>คงที่ {fmt(FIXED_TOTAL)} ({pct(FIXED_TOTAL, TOTAL_EXPENSE)})</span>
-            <span>ผันแปร {fmt(VARIABLE_TOTAL)} ({pct(VARIABLE_TOTAL, TOTAL_EXPENSE)})</span>
+            <span>คงที่ {fmt(fixedTotal)} ({pct(fixedTotal, totalExpense)})</span>
+            <span>ผันแปร {fmt(variableTotal)} ({pct(variableTotal, totalExpense)})</span>
           </div>
 
           <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16, marginBottom: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
               <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#202B29" }}>เช็คลิสต์การจ่ายเดือนนี้</span>
-              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459" }}>{paidCount}/{CHECKLIST_ITEMS.length} รายการ</span>
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459" }}>{paidCount}/{checklistItems.length} รายการ</span>
             </div>
             <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, marginBottom: 8, color: syncError ? "#7A2E1F" : DRIVE_CONFIGURED ? "#2F5D46" : "#AD8A2E" }}>
               {!loaded
@@ -333,23 +558,39 @@ function Dashboard() {
                 : "ยังไม่ได้ตั้งค่า Google Drive — ข้อมูลเก็บไว้ในเบราว์เซอร์นี้ก่อน"}
             </div>
             <div style={{ width: "100%", height: 8, borderRadius: 999, background: "#EDE8DC", overflow: "hidden" }}>
-              <div style={{ width: `${CHECKLIST_ITEMS.length ? (paidCount / CHECKLIST_ITEMS.length) * 100 : 0}%`, height: "100%", background: "#2F5D46", transition: "width .25s" }} />
+              <div style={{ width: `${checklistItems.length ? (paidCount / checklistItems.length) * 100 : 0}%`, height: "100%", background: "#2F5D46", transition: "width .25s" }} />
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459" }}>
-              <span>จ่ายแล้ว {fmt(paidSum)} จาก {fmt(TOTAL_EXPENSE)}</span>
+              <span>จ่ายแล้ว {fmt(paidSum)} จาก {fmt(totalExpense)}</span>
               <button onClick={resetChecklist} style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, cursor: "pointer", padding: 0 }}>ล้างเช็คลิสต์</button>
             </div>
           </div>
 
-          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B", marginBottom: 2 }}>รายจ่ายคงที่ · หักอัตโนมัติวันที่ 1 ทุกเดือน</div>
-          <GroupList groups={FIXED_EXPENSE_GROUPS} total={FIXED_TOTAL} checkable paid={paid} onToggle={togglePaid} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
+            <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายคงที่ · หักอัตโนมัติวันที่ 1 ทุกเดือน</span>
+            <EditToggle editing={editingFixed} onStart={startEditFixed} onSave={saveEditFixed} onCancel={cancelEditFixed} startLabel="แก้ไขรายการ" />
+          </div>
+          {editingFixed ? (
+            <GroupEditor groups={fixedDraft} onChangeValue={updateFixedValue} onChangeName={updateFixedName} onAddItem={addFixedItem} onRemoveItem={removeFixedItem} />
+          ) : (
+            <GroupList groups={displayFixedGroups} total={fixedTotal} checkable paid={paid} onToggle={togglePaid} />
+          )}
+          {editingFixed && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
 
-          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B", margin: "20px 0 10px" }}>รายจ่ายผันแปร · ตามรายวัน (แตะหมวดเพื่อดูรายละเอียดร้าน/บัตรที่ใช้จ่าย)</div>
-          <GroupList groups={VARIABLE_EXPENSE_GROUPS} total={VARIABLE_TOTAL} checkable paid={paid} onToggle={togglePaid} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, margin: "20px 0 10px" }}>
+            <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายผันแปร · ตามรายวัน (แตะหมวดเพื่อดูรายละเอียด)</span>
+            <EditToggle editing={editingVariable} onStart={startEditVariable} onSave={saveEditVariable} onCancel={cancelEditVariable} startLabel="แก้ไขรายการ" />
+          </div>
+          {editingVariable ? (
+            <GroupEditor groups={variableDraft} onChangeValue={updateVariableValue} onChangeName={updateVariableName} onAddItem={addVariableItem} onRemoveItem={removeVariableItem} />
+          ) : (
+            <GroupList groups={displayVariableGroups} total={variableTotal} checkable paid={paid} onToggle={togglePaid} />
+          )}
+          {editingVariable && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
         </div>
 
         <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-          หมายเหตุ: ข้อมูลสินทรัพย์และหนี้สิน ณ วันที่ 6 เม.ย. 2569 รายจ่ายเดือน ก.ค. 2569 แบ่งเป็นรายจ่ายคงที่ที่หักอัตโนมัติทุกวันที่ 1 และรายจ่ายผันแปรรายวันเท่าที่ปรากฏในภาพ (ถึงวันที่ 27 ก.ค.) อาจไม่ครบทั้งเดือน แตะรายการเพื่อติ๊กว่าจ่ายแล้ว สถานะจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
+          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน หรือรายจ่าย เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
         </div>
       </div>
     </div>
