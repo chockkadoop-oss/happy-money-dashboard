@@ -114,6 +114,71 @@ const DEFAULT_VARIABLE_EXPENSE_GROUPS = [
 
 const INCOME = { total: 132160, items: [["บริษัท 1 (เงินเดือน)",102160],["รายได้เสริม",30000]] };
 
+// Annual / irregular bills with a specific due date each — separate from the
+// monthly fixed/variable expenses above, and NOT folded into totalExpense or
+// netCashflow (a once-a-year bill would otherwise wildly distort a single
+// month's numbers). Tracked here purely so the dashboard can remind you
+// before each one comes due. repeatMonths lets a bill recur on its own cycle
+// (e.g. every 3 months) instead of just once — the dashboard automatically
+// rolls the due date forward once it's passed, so you don't have to.
+const REMINDER_WINDOW_DAYS = 30;
+const DEFAULT_ANNUAL_BILLS = [
+  { id: "annual-0", name: "ค่าขยะ", value: 300, dueDate: "2027-06-16", repeatMonths: 12 },
+  { id: "annual-1", name: "SECOM (อ้างอิง 10-11-12)", value: 16653, dueDate: "2026-10-01", repeatMonths: 3 },
+  { id: "annual-2", name: "ภาษี CHR + ค่าตรวจสอบ", value: 1600, dueDate: "2027-07-17", repeatMonths: 12 },
+  { id: "annual-3", name: "ประกัน CHR", value: 14000, dueDate: "2027-06-06", repeatMonths: 12 },
+  { id: "annual-4", name: "ค่าส่วนกลางคอนโด + extra", value: 28000, dueDate: "2026-08-31", repeatMonths: 12 },
+  { id: "annual-5", name: "ค่ากำจัดปลวก", value: 14552, dueDate: "2026-08-30", repeatMonths: 12 },
+  { id: "annual-6", name: "Mazuma", value: 6355, dueDate: "2027-05-23", repeatMonths: 12 },
+];
+
+// Date helpers for the annual-bills reminders (date-only, no time component).
+function parseISODate(str) {
+  if (!str) return null;
+  const [y, m, d] = str.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+function startOfToday() {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+}
+function addMonths(d, months) {
+  return new Date(d.getFullYear(), d.getMonth() + months, d.getDate());
+}
+// Rolls a bill's anchor due date forward by its repeat cycle until it lands
+// on today or later — so a quarterly bill from months ago still shows its
+// next real due date instead of looking permanently overdue.
+function nextOccurrence(dueDateStr, repeatMonths) {
+  const anchor = parseISODate(dueDateStr);
+  if (!anchor) return null;
+  const months = Number(repeatMonths) || 0;
+  if (months <= 0) return anchor;
+  const today = startOfToday();
+  let d = anchor;
+  let guard = 0;
+  while (d < today && guard < 2000) {
+    d = addMonths(d, months);
+    guard++;
+  }
+  return d;
+}
+function daysUntilDate(d) {
+  if (!d) return null;
+  return Math.round((d - startOfToday()) / 86400000);
+}
+function formatDate(d) {
+  if (!d) return "ยังไม่ระบุวันที่";
+  return `${d.getDate()} ${THAI_MONTHS_ABBR[d.getMonth()]} ${d.getFullYear() + 543}`;
+}
+const REPEAT_OPTIONS = [
+  { value: 0, label: "ไม่ซ้ำ (ครั้งเดียว)" },
+  { value: 1, label: "ทุกเดือน" },
+  { value: 3, label: "ทุก 3 เดือน" },
+  { value: 6, label: "ทุก 6 เดือน" },
+  { value: 12, label: "ทุกปี" },
+];
+
 // 🔧 SETUP: paste your Google Apps Script Web App URL here (ends in /exec).
 // Until you do, all data is kept in this browser (localStorage) as a fallback.
 const DRIVE_API_URL = "https://script.google.com/macros/s/AKfycbx7icu7pxNBl1guS0pMXkzZ8F7KMKVIIL2Yvw7O5SJ6AJwJ-dM6hWJ3pSwA8mo8QdPK/exec";
@@ -405,6 +470,96 @@ function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveI
   );
 }
 
+// Highlighted alert listing annual bills due within REMINDER_WINDOW_DAYS (or
+// already overdue). Renders nothing if there's nothing to warn about.
+function UpcomingBillsBanner({ bills }) {
+  if (!bills.length) return null;
+  return (
+    <div style={{ background: "#FBF3DE", border: "1px solid #E8CE8A", borderRadius: 14, padding: "14px 16px", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 15 }}>🔔</span>
+        <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, color: "#7A5C1E" }}>รายจ่ายประจำปีใกล้ถึงกำหนด</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {bills.map((b) => (
+          <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5 }}>
+            <span style={{ color: "#5C4A1A" }}>{b.name} · {fmt(b.value)}</span>
+            <span style={{ fontWeight: 600, whiteSpace: "nowrap", color: b.days < 0 ? "#7A2E1F" : b.days <= 7 ? "#AD8A2E" : "#8A6B1E" }}>
+              {b.days < 0 ? `เลยกำหนด ${Math.abs(b.days)} วัน` : b.days === 0 ? "ถึงกำหนดวันนี้" : `อีก ${b.days} วัน`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Read-only list of annual bills, soonest next occurrence first.
+function AnnualBillsList({ bills }) {
+  const withNext = bills.map((b) => {
+    const next = nextOccurrence(b.dueDate, b.repeatMonths);
+    return { ...b, next, days: daysUntilDate(next) };
+  });
+  const sorted = [...withNext].sort((a, b) => {
+    if (!a.next) return 1;
+    if (!b.next) return -1;
+    return a.next - b.next;
+  });
+  return (
+    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+      {sorted.length === 0 && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#A79E8E" }}>ไม่มีรายการ</div>}
+      {sorted.map((b) => {
+        const overdue = b.days !== null && b.days < 0;
+        const soon = b.days !== null && b.days >= 0 && b.days <= REMINDER_WINDOW_DAYS;
+        const repeatLabel = (REPEAT_OPTIONS.find((r) => r.value === (Number(b.repeatMonths) || 0)) || REPEAT_OPTIONS[0]).label;
+        return (
+          <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, borderBottom: "1px solid #E6E0D2", paddingBottom: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ color: "#202B29" }}>{b.name}</div>
+              <div style={{ fontSize: 11.5, color: overdue ? "#7A2E1F" : soon ? "#AD8A2E" : "#A79E8E", marginTop: 2 }}>
+                กำหนด {formatDate(b.next)} · {repeatLabel}
+                {overdue && " · เลยกำหนดแล้ว"}
+                {soon && !overdue && ` · อีก ${b.days} วัน`}
+              </div>
+            </div>
+            <span style={{ fontWeight: 700, color: "#202B29", flexShrink: 0 }}>{fmt(b.value)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Editable list of annual bills: name, amount, and due date, plus add/remove.
+function AnnualBillsEditor({ bills, onChangeField, onAdd, onRemove }) {
+  return (
+    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+      {bills.map((b) => (
+        <div key={b.id} style={{ border: "1px solid #E6E0D2", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input type="text" value={b.name} placeholder="ชื่อรายการ"
+              onChange={(e) => onChangeField(b.id, "name", e.target.value)} style={inputTextStyle} />
+            <button onClick={() => onRemove(b.id)} title="ลบรายการ" style={removeBtnStyle}>✕</button>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input type="number" inputMode="decimal" value={b.value} placeholder="0"
+              onChange={(e) => onChangeField(b.id, "value", e.target.value)}
+              style={{ ...inputNumberStyle, width: "auto", flex: 1 }} />
+            <input type="date" value={b.dueDate || ""}
+              onChange={(e) => onChangeField(b.id, "dueDate", e.target.value)}
+              style={{ flex: 1, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8" }} />
+          </div>
+          <select value={Number(b.repeatMonths) || 0} onChange={(e) => onChangeField(b.id, "repeatMonths", Number(e.target.value))}
+            style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8" }}>
+            {REPEAT_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+          </select>
+        </div>
+      ))}
+      <button onClick={onAdd} style={{ ...addBtnStyle, width: "100%", textAlign: "center", borderStyle: "solid", borderColor: "#AD8A2E", color: "#AD8A2E" }}>+ เพิ่มรายการ</button>
+    </div>
+  );
+}
+
 function EditToggle({ editing, onStart, onSave, onCancel, startLabel }) {
   return editing ? (
     <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
@@ -470,6 +625,8 @@ function Dashboard() {
   const [fixedDraft, setFixedDraft] = useState(null);
   const [editingVariable, setEditingVariable] = useState(false);
   const [variableDraft, setVariableDraft] = useState(null);
+  const [editingAnnual, setEditingAnnual] = useState(false);
+  const [annualDraft, setAnnualDraft] = useState(null);
 
   useEffect(() => {
     let mounted = true;
@@ -558,6 +715,19 @@ function Dashboard() {
   historyRecord[MONTH_KEY] = { netWorth, totalAssets, totalLiab, income: INCOME.total, totalExpense, fixedTotal, variableTotal, netCashflow, paidCount, totalItems: checklistItems.length };
   const historyList = Object.keys(historyRecord).sort().slice(-12).map((k) => ({ key: k, ...historyRecord[k] }));
 
+  // Annual bills: kept separate from totalExpense/netCashflow on purpose (a
+  // once-a-year bill would badly distort a single month's numbers). Just
+  // tracked here for reminders.
+  const annualBills = allData.annualBills || DEFAULT_ANNUAL_BILLS;
+  const annualTotal = annualBills.reduce((s, b) => s + (Number(b.value) || 0), 0);
+  const upcomingBills = annualBills
+    .map((b) => {
+      const next = nextOccurrence(b.dueDate, b.repeatMonths);
+      return { ...b, days: daysUntilDate(next) };
+    })
+    .filter((b) => b.days !== null && b.days <= REMINDER_WINDOW_DAYS)
+    .sort((a, b) => a.days - b.days);
+
   // ---- assets (full CRUD: add / remove / rename / amount) ----
   const startEditAssets = () => { setAssetDraft(cloneAsDraft(assetGroups)); setEditingAssets(true); };
   const updateAssetName = (gk, id, name) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
@@ -616,6 +786,18 @@ function Dashboard() {
     setEditingVariable(false); setVariableDraft(null);
   };
 
+  // ---- annual bills (name, amount, due date; add / remove) ----
+  const startEditAnnual = () => { setAnnualDraft(annualBills.map((b) => ({ ...b, value: String(b.value) }))); setEditingAnnual(true); };
+  const updateAnnualField = (id, field, value) => setAnnualDraft((prev) => prev.map((b) => b.id === id ? { ...b, [field]: value } : b));
+  const addAnnualBill = () => setAnnualDraft((prev) => [...prev, { id: makeId(), name: "", value: "0", dueDate: "", repeatMonths: 12 }]);
+  const removeAnnualBill = (id) => setAnnualDraft((prev) => prev.filter((b) => b.id !== id));
+  const cancelEditAnnual = () => { setEditingAnnual(false); setAnnualDraft(null); };
+  const saveEditAnnual = () => {
+    const finalList = annualDraft.map((b) => ({ id: b.id, name: (b.name || "").trim() || "รายการใหม่", value: parseNum(b.value, 0), dueDate: b.dueDate || "", repeatMonths: Number(b.repeatMonths) || 0 }));
+    persist({ ...allData, annualBills: finalList });
+    setEditingAnnual(false); setAnnualDraft(null);
+  };
+
   const lastUpdatedLabel = allData.lastUpdated ? formatThaiDateTime(new Date(allData.lastUpdated)) : "ยังไม่มีการอัปเดตข้อมูล";
   const liquidGroup = displayAssetGroups.find((g) => g.key === "liquid") || displayAssetGroups[0];
 
@@ -640,6 +822,8 @@ function Dashboard() {
             Dashboard ประจำเดือน{CURRENT_MONTH_FULL}
           </div>
         </div>
+
+        <UpcomingBillsBanner bills={upcomingBills} />
 
         <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 18, padding: "20px 20px 22px", marginBottom: 16 }}>
           <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459" }}>ความมั่งคั่งสุทธิ (สินทรัพย์ − หนี้สิน)</div>
@@ -802,8 +986,21 @@ function Dashboard() {
           </div>
         </div>
 
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <SectionTitle eyebrow="รายจ่ายประจำปี / ตามรอบ" title={`รวม ${fmt(annualTotal)}`} />
+            <EditToggle editing={editingAnnual} onStart={startEditAnnual} onSave={saveEditAnnual} onCancel={cancelEditAnnual} startLabel="แก้ไขรายการ" />
+          </div>
+          {editingAnnual ? (
+            <AnnualBillsEditor bills={annualDraft} onChangeField={updateAnnualField} onAdd={addAnnualBill} onRemove={removeAnnualBill} />
+          ) : (
+            <AnnualBillsList bills={annualBills} />
+          )}
+          {editingAnnual && <div style={hintStyle}>แก้ไขชื่อ ยอดเงิน วันครบกำหนด และรอบการจ่ายซ้ำได้ แล้วกด "บันทึก" — ระบบจะแจ้งเตือนอัตโนมัติล่วงหน้า {REMINDER_WINDOW_DAYS} วันก่อนถึงกำหนด (ไม่รวมในยอดรายจ่ายรายเดือนด้านบน เพื่อไม่ให้ตัวเลขเดือนใดเดือนหนึ่งเพี้ยน)</div>}
+        </div>
+
         <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน หรือรายจ่าย เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
+          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน รายจ่าย หรือรายจ่ายประจำปี เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) หมวดรายจ่ายประจำปีจะขึ้นแจ้งเตือนด้านบนสุดของหน้าโดยอัตโนมัติเมื่อใกล้ถึงวันครบกำหนด (ล่วงหน้า {REMINDER_WINDOW_DAYS} วัน) และไม่ถูกรวมเข้าไปในยอดรายจ่ายรายเดือน สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
         </div>
       </div>
     </div>
