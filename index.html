@@ -137,6 +137,37 @@ function liveGroups(baseGroupsT, editing, draft) {
 function cloneAsDraft(groups) {
   return groups.map((g) => ({ ...g, items: g.items.map((it) => ({ ...it, value: String(it.value) })) }));
 }
+// Compact "ก.ค.69" style label from a "2569-07" month key, for chart axes.
+function monthLabelFromKey(key) {
+  const [yearStr, moStr] = key.split("-");
+  const mo = parseInt(moStr, 10) - 1;
+  return `${THAI_MONTHS_ABBR[mo]}${yearStr.slice(-2)}`;
+}
+// Computes the whole-dashboard summary (net worth, income/expense, etc.) for a
+// given allData-shaped object. Used to freeze a month-end snapshot into
+// allData.history every time something is saved.
+function computeSnapshot(data) {
+  const aGroups = withTotals(data.assetGroups || DEFAULT_ASSET_GROUPS);
+  const lGroups = withTotals(data.liabilityGroups || DEFAULT_LIABILITY_GROUPS);
+  const fGroups = withTotals(data.fixedGroups || DEFAULT_FIXED_EXPENSE_GROUPS);
+  const vGroups = withTotals(data.variableGroups || DEFAULT_VARIABLE_EXPENSE_GROUPS);
+  const totalAssets = aGroups.reduce((s, g) => s + g.value, 0);
+  const totalLiab = lGroups.reduce((s, g) => s + g.value, 0);
+  const fixedTotal = fGroups.reduce((s, g) => s + g.value, 0);
+  const variableTotal = vGroups.reduce((s, g) => s + g.value, 0);
+  const totalExpense = fixedTotal + variableTotal;
+  const items = [
+    ...(data.fixedGroups || DEFAULT_FIXED_EXPENSE_GROUPS).flatMap((g) => g.items),
+    ...(data.variableGroups || DEFAULT_VARIABLE_EXPENSE_GROUPS).flatMap((g) => g.items),
+  ];
+  const monthPaid = data[MONTH_KEY] || {};
+  const paidCount = items.filter((it) => monthPaid[it.id]).length;
+  return {
+    netWorth: totalAssets - totalLiab, totalAssets, totalLiab,
+    income: INCOME.total, totalExpense, fixedTotal, variableTotal, netCashflow: INCOME.total - totalExpense,
+    paidCount, totalItems: items.length,
+  };
+}
 
 // ---------- small building blocks ----------
 function CompositionBar({ groups, total }) {
@@ -145,6 +176,111 @@ function CompositionBar({ groups, total }) {
       {groups.map((g) => (
         <div key={g.key} style={{ width: `${total ? (g.value / total) * 100 : 0}%`, background: g.color }} title={g.label} />
       ))}
+    </div>
+  );
+}
+
+// Metrics selectable in the monthly trend chart. netCashflow is the only one
+// that can go negative (a deficit month), so its bars are drawn above/below a
+// zero line; the rest are always ≥ 0 and drawn from the bottom as usual.
+const TREND_METRICS = [
+  { key: "netWorth", label: "ความมั่งคั่งสุทธิ", color: "#2F5D46", allowNegative: false },
+  { key: "totalAssets", label: "สินทรัพย์รวม", color: "#4F8467", allowNegative: false },
+  { key: "totalLiab", label: "หนี้สินรวม", color: "#7A2E1F", allowNegative: false },
+  { key: "income", label: "รายรับ", color: "#1F6E6B", allowNegative: false },
+  { key: "totalExpense", label: "รายจ่าย", color: "#8A5A2B", allowNegative: false },
+  { key: "netCashflow", label: "คงเหลือสุทธิต่อเดือน", color: "#2F5D46", negativeColor: "#7A2E1F", allowNegative: true },
+];
+
+// Month-by-month bar chart that can switch between several metrics via tabs.
+// Tap a bar to see that month's value + change vs the previous month.
+function MonthlyTrendChart({ history, currentKey }) {
+  const [metricKey, setMetricKey] = useState("netWorth");
+  const [selected, setSelected] = useState(null);
+  if (!history.length) return null;
+  const metric = TREND_METRICS.find((m) => m.key === metricKey) || TREND_METRICS[0];
+
+  const values = history.map((h) => Number(h[metric.key]) || 0);
+  const maxPos = Math.max(...values, 0, 1);
+  const minNeg = Math.min(...values, 0);
+  const hasNegative = metric.allowNegative && minNeg < 0;
+
+  const activeKey = selected && history.some((h) => h.key === selected) ? selected : currentKey;
+  const activeIdx = history.findIndex((h) => h.key === activeKey);
+  const activeEntry = history[activeIdx] || history[history.length - 1];
+  const activeVal = Number(activeEntry[metric.key]) || 0;
+  const prevEntry = activeIdx > 0 ? history[activeIdx - 1] : null;
+  const diff = prevEntry ? activeVal - (Number(prevEntry[metric.key]) || 0) : null;
+  const dense = history.length > 7;
+  const CH = 110;
+  const zoneH = hasNegative ? CH / 2 : CH;
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 8, marginBottom: 4 }}>
+        {TREND_METRICS.map((m) => (
+          <button key={m.key} onClick={() => setMetricKey(m.key)}
+            style={{
+              flexShrink: 0, padding: "6px 11px", borderRadius: 999, cursor: "pointer", whiteSpace: "nowrap",
+              fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12,
+              border: m.key === metricKey ? "1px solid #AD8A2E" : "1px solid #E6E0D2",
+              background: m.key === metricKey ? "#FBF3DE" : "#FFFFFF",
+              color: m.key === metricKey ? "#8A6B1E" : "#6B6459",
+              fontWeight: m.key === metricKey ? 600 : 400,
+            }}>{m.label}</button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: dense ? "flex-start" : "center", gap: dense ? 8 : 16, height: CH, overflowX: "auto" }}>
+        {history.map((h) => {
+          const val = Number(h[metric.key]) || 0;
+          const isActive = h.key === activeEntry.key;
+          const isCurrent = h.key === currentKey;
+          const barColor = val < 0 ? (metric.negativeColor || "#7A2E1F") : metric.color;
+          const opacity = isActive ? 1 : isCurrent ? 0.85 : 0.4;
+          const barH = hasNegative
+            ? Math.max((Math.abs(val) / (val >= 0 ? maxPos : Math.abs(minNeg))) * zoneH, 3)
+            : Math.max((Math.max(val, 0) / maxPos) * zoneH, 3);
+          return (
+            <button key={h.key} onClick={() => setSelected(h.key)} title={`${monthLabelFromKey(h.key)}: ${fmt(val)}`}
+              style={{ display: "flex", flexDirection: "column", justifyContent: hasNegative ? "flex-start" : "flex-end", height: "100%", background: "none", border: "none", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+              {hasNegative ? (
+                <React.Fragment>
+                  <div style={{ height: zoneH, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+                    {val >= 0 && <div style={{ width: 22, height: barH, borderRadius: "6px 6px 0 0", background: barColor, opacity, transition: "opacity .15s" }} />}
+                  </div>
+                  <div style={{ height: 1, background: "#C9C2B2" }} />
+                  <div style={{ height: zoneH, display: "flex", alignItems: "flex-start", justifyContent: "center" }}>
+                    {val < 0 && <div style={{ width: 22, height: barH, borderRadius: "0 0 6px 6px", background: barColor, opacity, transition: "opacity .15s" }} />}
+                  </div>
+                </React.Fragment>
+              ) : (
+                <div style={{ width: 22, height: barH, borderRadius: "6px 6px 0 0", background: barColor, opacity, transition: "opacity .15s" }} />
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", justifyContent: dense ? "flex-start" : "center", gap: dense ? 8 : 16, marginTop: 4, overflowX: "auto" }}>
+        {history.map((h) => (
+          <span key={h.key} style={{ width: 22, flexShrink: 0, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10, color: h.key === activeEntry.key ? "#AD8A2E" : "#A79E8E" }}>
+            {monthLabelFromKey(h.key)}
+          </span>
+        ))}
+      </div>
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E6E0D2" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459" }}>{metric.label} · {monthLabelFromKey(activeEntry.key)}</span>
+          <span style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 19, color: activeVal < 0 ? (metric.negativeColor || "#7A2E1F") : "#202B29" }}>
+            {activeVal < 0 ? "−" : ""}{fmt(Math.abs(activeVal))}
+          </span>
+        </div>
+        {diff !== null && (
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: diff >= 0 ? "#2F5D46" : "#7A2E1F", marginTop: 3 }}>
+            {diff >= 0 ? "▲ เพิ่มขึ้น" : "▼ ลดลง"} {fmt(Math.abs(diff))} จากเดือนก่อน
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -299,6 +435,19 @@ function SectionTitle({ eyebrow, title }) {
   );
 }
 
+// Tracks viewport width so the layout can adapt: single column on phones,
+// a bit more breathing room on tablets, and paired two-column sections on
+// wide/desktop screens.
+function useWindowWidth() {
+  const [width, setWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 480);
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return width;
+}
+
 function Dashboard() {
   // allData persists (via Google Drive bridge, or localStorage as a fallback):
   //   allData[MONTH_KEY]     -> which checklist items are ticked this month, by item id
@@ -306,6 +455,8 @@ function Dashboard() {
   //   allData.liabilityGroups-> saved liability groups (once edited)
   //   allData.fixedGroups    -> saved fixed-expense groups (once edited/added/removed)
   //   allData.variableGroups -> saved variable-expense groups (once edited/added/removed)
+  //   allData.history        -> { "2569-07": {netWorth, totalAssets, ...}, ... } — a frozen
+  //                              month-end-ish snapshot per month, kept for the last 12 months
   //   allData.lastUpdated    -> ISO timestamp of the last edit or checkbox tick
   const [allData, setAllData] = useState({});
   const [loaded, setLoaded] = useState(false);
@@ -339,9 +490,15 @@ function Dashboard() {
   }, []);
 
   // Every call to persist() represents a real update (amount edit or checkbox
-  // tick), so it also stamps "last updated" for the header.
+  // tick), so it also stamps "last updated" for the header, and freezes a
+  // snapshot of the whole dashboard into history[MONTH_KEY] — trimmed to the
+  // most recent 12 months — so past months build up a comparable trend.
   const persist = (nextAllData) => {
-    const stamped = { ...nextAllData, lastUpdated: new Date().toISOString() };
+    const mergedHistory = { ...(nextAllData.history || {}), [MONTH_KEY]: { ...computeSnapshot(nextAllData), updatedAt: new Date().toISOString() } };
+    const keptKeys = Object.keys(mergedHistory).sort().slice(-12);
+    const trimmedHistory = {};
+    keptKeys.forEach((k) => { trimmedHistory[k] = mergedHistory[k]; });
+    const stamped = { ...nextAllData, history: trimmedHistory, lastUpdated: new Date().toISOString() };
     setAllData(stamped);
     if (!DRIVE_CONFIGURED) {
       try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(stamped)); } catch (e) {}
@@ -394,6 +551,12 @@ function Dashboard() {
   const resetChecklist = () => persist({ ...allData, [MONTH_KEY]: {} });
   const paidCount = checklistItems.filter((it) => paid[it.id]).length;
   const paidSum = checklistItems.filter((it) => paid[it.id]).reduce((s, it) => s + (Number(it.value) || 0), 0);
+
+  // Merge saved history with a live snapshot of the current month (so the
+  // trend chart always reflects "right now" even before the first save).
+  const historyRecord = { ...(allData.history || {}) };
+  historyRecord[MONTH_KEY] = { netWorth, totalAssets, totalLiab, income: INCOME.total, totalExpense, fixedTotal, variableTotal, netCashflow, paidCount, totalItems: checklistItems.length };
+  const historyList = Object.keys(historyRecord).sort().slice(-12).map((k) => ({ key: k, ...historyRecord[k] }));
 
   // ---- assets (full CRUD: add / remove / rename / amount) ----
   const startEditAssets = () => { setAssetDraft(cloneAsDraft(assetGroups)); setEditingAssets(true); };
@@ -456,9 +619,18 @@ function Dashboard() {
   const lastUpdatedLabel = allData.lastUpdated ? formatThaiDateTime(new Date(allData.lastUpdated)) : "ยังไม่มีการอัปเดตข้อมูล";
   const liquidGroup = displayAssetGroups.find((g) => g.key === "liquid") || displayAssetGroups[0];
 
+  // Responsive breakpoints: phones stay single-column at their current width;
+  // tablets get a wider reading column and a 4-up stat grid; desktops also
+  // pair up the asset/liability and fixed/variable-expense sections side by side.
+  const viewportWidth = useWindowWidth();
+  const isTablet = viewportWidth >= 640;
+  const isDesktop = viewportWidth >= 1024;
+  const containerMaxWidth = isDesktop ? 1040 : isTablet ? 640 : 480;
+  const pairGridStyle = isDesktop ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "start" } : {};
+
   return (
-    <div style={{ minHeight: "100vh", background: "#F6F3EC", padding: "28px 16px 60px", display: "flex", justifyContent: "center" }}>
-      <div style={{ width: "100%", maxWidth: 480 }}>
+    <div style={{ minHeight: "100vh", background: "#F6F3EC", padding: isDesktop ? "36px 28px 60px" : isTablet ? "32px 20px 60px" : "28px 16px 60px", display: "flex", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: containerMaxWidth }}>
         <div style={{ marginBottom: 22 }}>
           <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, letterSpacing: "0.1em", color: "#AD8A2E", fontWeight: 600, textTransform: "uppercase" }}>
             HAPPY MONEY · ข้อมูลล่าสุด {lastUpdatedLabel}
@@ -491,39 +663,48 @@ function Dashboard() {
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 24 }}>
+        <div style={{ marginBottom: 24 }}>
+          <SectionTitle eyebrow="ย้อนหลังสูงสุด 12 เดือน" title="เปรียบเทียบข้อมูลรายเดือน" />
+          <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16 }}>
+            <MonthlyTrendChart history={historyList} currentKey={MONTH_KEY} />
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: isTablet ? "repeat(4, 1fr)" : "1fr 1fr", gap: 10, marginBottom: 24 }}>
           <StatCard label={`รายรับ ${CURRENT_MONTH_ABBR}`} value={fmt(INCOME.total)} color="#1F6E6B" />
           <StatCard label={`รายจ่าย ${CURRENT_MONTH_ABBR}`} value={fmt(totalExpense)} sub={`คงที่ ${fmt(fixedTotal)} + ผันแปร ${fmt(variableTotal)}`} color="#8A5A2B" />
           <StatCard label="คงเหลือสุทธิเดือนนี้" value={fmt(netCashflow)} sub={netCashflow >= 0 ? `อัตราการออม ${pct(netCashflow, INCOME.total)}` : "รายจ่ายสูงกว่ารายรับเดือนนี้"} color={netCashflow >= 0 ? "#202B29" : "#7A2E1F"} />
           <StatCard label="สินทรัพย์สภาพคล่อง" value={fmt(liquidGroup ? liquidGroup.value : 0)} sub="เงินสด/บัญชีออมทรัพย์" color="#202B29" />
         </div>
 
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-            <SectionTitle eyebrow="สินทรัพย์" title={`รวม ${fmt(totalAssets)}`} />
-            <EditToggle editing={editingAssets} onStart={startEditAssets} onSave={saveEditAssets} onCancel={cancelEditAssets} startLabel="แก้ไขรายการ" />
+        <div style={pairGridStyle}>
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+              <SectionTitle eyebrow="สินทรัพย์" title={`รวม ${fmt(totalAssets)}`} />
+              <EditToggle editing={editingAssets} onStart={startEditAssets} onSave={saveEditAssets} onCancel={cancelEditAssets} startLabel="แก้ไขรายการ" />
+            </div>
+            <CompositionBar groups={displayAssetGroups} total={totalAssets} />
+            {editingAssets ? (
+              <GroupEditor groups={assetDraft} onChangeValue={updateAssetValue} onChangeName={updateAssetName} onAddItem={addAssetItem} onRemoveItem={removeAssetItem} />
+            ) : (
+              <GroupList groups={displayAssetGroups} total={totalAssets} />
+            )}
+            {editingAssets && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
           </div>
-          <CompositionBar groups={displayAssetGroups} total={totalAssets} />
-          {editingAssets ? (
-            <GroupEditor groups={assetDraft} onChangeValue={updateAssetValue} onChangeName={updateAssetName} onAddItem={addAssetItem} onRemoveItem={removeAssetItem} />
-          ) : (
-            <GroupList groups={displayAssetGroups} total={totalAssets} />
-          )}
-          {editingAssets && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
-        </div>
 
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-            <SectionTitle eyebrow="หนี้สิน" title={`รวม ${fmt(totalLiab)}`} />
-            <EditToggle editing={editingLiabilities} onStart={startEditLiabilities} onSave={saveEditLiabilities} onCancel={cancelEditLiabilities} startLabel="แก้ไขรายการ" />
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+              <SectionTitle eyebrow="หนี้สิน" title={`รวม ${fmt(totalLiab)}`} />
+              <EditToggle editing={editingLiabilities} onStart={startEditLiabilities} onSave={saveEditLiabilities} onCancel={cancelEditLiabilities} startLabel="แก้ไขรายการ" />
+            </div>
+            <CompositionBar groups={displayLiabilityGroups} total={totalLiab} />
+            {editingLiabilities ? (
+              <GroupEditor groups={liabilityDraft} onChangeValue={updateLiabilityValue} onChangeName={updateLiabilityName} onAddItem={addLiabilityItem} onRemoveItem={removeLiabilityItem} />
+            ) : (
+              <GroupList groups={displayLiabilityGroups} total={totalLiab} />
+            )}
+            {editingLiabilities && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
           </div>
-          <CompositionBar groups={displayLiabilityGroups} total={totalLiab} />
-          {editingLiabilities ? (
-            <GroupEditor groups={liabilityDraft} onChangeValue={updateLiabilityValue} onChangeName={updateLiabilityName} onAddItem={addLiabilityItem} onRemoveItem={removeLiabilityItem} />
-          ) : (
-            <GroupList groups={displayLiabilityGroups} total={totalLiab} />
-          )}
-          {editingLiabilities && <div style={hintStyle}>เพิ่ม/ลบรายการ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
         </div>
 
         <div style={{ marginBottom: 24 }}>
@@ -590,33 +771,39 @@ function Dashboard() {
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
-            <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายคงที่ · หักอัตโนมัติวันที่ 1 ทุกเดือน</span>
-            <EditToggle editing={editingFixed} onStart={startEditFixed} onSave={saveEditFixed} onCancel={cancelEditFixed} startLabel="แก้ไขรายการ" />
-          </div>
-          {editingFixed ? (
-            <GroupEditor groups={fixedDraft} onChangeValue={updateFixedValue} onChangeName={updateFixedName} onAddItem={addFixedItem} onRemoveItem={removeFixedItem}
-              allowCategoryManagement onRenameGroup={renameFixedGroup} onAddGroup={addFixedGroup} onRemoveGroup={removeFixedGroup} />
-          ) : (
-            <GroupList groups={displayFixedGroups} total={fixedTotal} checkable paid={paid} onToggle={togglePaid} />
-          )}
-          {editingFixed && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
+          <div style={pairGridStyle}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายคงที่ · หักอัตโนมัติวันที่ 1 ทุกเดือน</span>
+                <EditToggle editing={editingFixed} onStart={startEditFixed} onSave={saveEditFixed} onCancel={cancelEditFixed} startLabel="แก้ไขรายการ" />
+              </div>
+              {editingFixed ? (
+                <GroupEditor groups={fixedDraft} onChangeValue={updateFixedValue} onChangeName={updateFixedName} onAddItem={addFixedItem} onRemoveItem={removeFixedItem}
+                  allowCategoryManagement onRenameGroup={renameFixedGroup} onAddGroup={addFixedGroup} onRemoveGroup={removeFixedGroup} />
+              ) : (
+                <GroupList groups={displayFixedGroups} total={fixedTotal} checkable paid={paid} onToggle={togglePaid} />
+              )}
+              {editingFixed && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
+            </div>
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, margin: "20px 0 10px" }}>
-            <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายผันแปร · ตามรายวัน (แตะหมวดเพื่อดูรายละเอียด)</span>
-            <EditToggle editing={editingVariable} onStart={startEditVariable} onSave={saveEditVariable} onCancel={cancelEditVariable} startLabel="แก้ไขรายการ" />
+            <div style={{ marginTop: isDesktop ? 0 : 20 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายผันแปร · ตามรายวัน (แตะหมวดเพื่อดูรายละเอียด)</span>
+                <EditToggle editing={editingVariable} onStart={startEditVariable} onSave={saveEditVariable} onCancel={cancelEditVariable} startLabel="แก้ไขรายการ" />
+              </div>
+              {editingVariable ? (
+                <GroupEditor groups={variableDraft} onChangeValue={updateVariableValue} onChangeName={updateVariableName} onAddItem={addVariableItem} onRemoveItem={removeVariableItem}
+                  allowCategoryManagement onRenameGroup={renameVariableGroup} onAddGroup={addVariableGroup} onRemoveGroup={removeVariableGroup} />
+              ) : (
+                <GroupList groups={displayVariableGroups} total={variableTotal} checkable paid={paid} onToggle={togglePaid} />
+              )}
+              {editingVariable && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
+            </div>
           </div>
-          {editingVariable ? (
-            <GroupEditor groups={variableDraft} onChangeValue={updateVariableValue} onChangeName={updateVariableName} onAddItem={addVariableItem} onRemoveItem={removeVariableItem}
-              allowCategoryManagement onRenameGroup={renameVariableGroup} onAddGroup={addVariableGroup} onRemoveGroup={removeVariableGroup} />
-          ) : (
-            <GroupList groups={displayVariableGroups} total={variableTotal} checkable paid={paid} onToggle={togglePaid} />
-          )}
-          {editingVariable && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
         </div>
 
         <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน หรือรายจ่าย เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
+          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน หรือรายจ่าย เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
         </div>
       </div>
     </div>
