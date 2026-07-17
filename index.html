@@ -234,6 +234,23 @@ function computeSnapshot(data) {
   };
 }
 
+// One-time migration: if a section has never been saved before (its key is
+// missing from the loaded data), seed it from the built-in starting defaults
+// exactly once. The caller then writes the result back to storage, so from
+// that point on the SAVED copy is what's used — future code updates can
+// change or remove the DEFAULT_* constants entirely without ever touching
+// data that's already been seeded/edited.
+function seedMissingDefaults(data) {
+  const seeded = { ...data };
+  let changed = false;
+  if (!seeded.assetGroups) { seeded.assetGroups = DEFAULT_ASSET_GROUPS; changed = true; }
+  if (!seeded.liabilityGroups) { seeded.liabilityGroups = DEFAULT_LIABILITY_GROUPS; changed = true; }
+  if (!seeded.fixedGroups) { seeded.fixedGroups = DEFAULT_FIXED_EXPENSE_GROUPS; changed = true; }
+  if (!seeded.variableGroups) { seeded.variableGroups = DEFAULT_VARIABLE_EXPENSE_GROUPS; changed = true; }
+  if (!seeded.annualBills) { seeded.annualBills = DEFAULT_ANNUAL_BILLS; changed = true; }
+  return { seeded, changed };
+}
+
 // ---------- small building blocks ----------
 function CompositionBar({ groups, total }) {
   return (
@@ -630,19 +647,41 @@ function Dashboard() {
 
   useEffect(() => {
     let mounted = true;
+
+    // Loads whatever's saved, fills in any never-saved sections from the
+    // built-in defaults, and — only the first time that happens — writes
+    // the result back to storage so it becomes the permanent saved copy.
+    const seedAndSet = (rawData, skipWriteBack) => {
+      if (!mounted) return;
+      const { seeded, changed } = seedMissingDefaults(rawData || {});
+      setAllData(seeded);
+      setLoaded(true);
+      if (changed && !skipWriteBack) {
+        if (!DRIVE_CONFIGURED) {
+          try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(seeded)); } catch (e) {}
+        } else {
+          fetch(DRIVE_API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify(seeded),
+          }).catch(() => setSyncError(true));
+        }
+      }
+    };
+
     if (!DRIVE_CONFIGURED) {
       try {
         const raw = localStorage.getItem(LOCAL_FALLBACK_KEY);
-        if (mounted) setAllData(raw ? JSON.parse(raw) : {});
-      } catch (e) {}
-      if (mounted) setLoaded(true);
+        seedAndSet(raw ? JSON.parse(raw) : {}, false);
+      } catch (e) {
+        seedAndSet({}, false);
+      }
       return;
     }
     fetch(DRIVE_API_URL)
       .then((r) => r.json())
-      .then((data) => { if (mounted) setAllData(data || {}); })
-      .catch(() => { if (mounted) setSyncError(true); })
-      .finally(() => { if (mounted) setLoaded(true); });
+      .then((data) => seedAndSet(data, false))
+      .catch(() => { if (mounted) setSyncError(true); seedAndSet({}, true); });
     return () => { mounted = false; };
   }, []);
 
