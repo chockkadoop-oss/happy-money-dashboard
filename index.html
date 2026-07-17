@@ -16,7 +16,7 @@ body { background: #F6F3EC; }
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script type="text/babel" data-presets="react">
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 const fmt = (n) => "฿" + Math.round(n || 0).toLocaleString("th-TH");
 const pct = (n, total) => (total ? ((n / total) * 100).toFixed(1) : "0.0") + "%";
@@ -78,38 +78,36 @@ const DEFAULT_LIABILITY_GROUPS = [
       .map(([name, value], i) => ({ id: `long-${i}`, name, value })) },
 ];
 
+// Builds item objects with stable ids, defaulting dueDay (day-of-month
+// reminder for monthly items) to null/unset.
+function mapItems(pairs, prefix) {
+  return pairs.map(([name, value], i) => ({ id: `${prefix}-${i}`, name, value, dueDay: null }));
+}
+
 const DEFAULT_FIXED_EXPENSE_GROUPS = [
   { key: "tax", label: "ภาษี/ประกันสังคม", color: "#7A4F22",
-    items: [["ภาษีหัก ณ ที่จ่าย",8484],["ประกันสังคม",875]]
-      .map(([name, value], i) => ({ id: `tax-${i}`, name, value })) },
+    items: mapItems([["ภาษีหัก ณ ที่จ่าย",8484],["ประกันสังคม",875]], "tax") },
   { key: "save", label: "ออม/กองทุนเกษียณ", color: "#B07E45",
-    items: [["กองทุนสำรองเลี้ยงชีพ",10216],["สหกรณ์ออมทรัพย์ (1)",1000],["สหกรณ์ออมทรัพย์ (2)",5000],["เงินฝากธนาคาร AIS",1000]]
-      .map(([name, value], i) => ({ id: `save-${i}`, name, value })) },
+    items: mapItems([["กองทุนสำรองเลี้ยงชีพ",10216],["สหกรณ์ออมทรัพย์ (1)",1000],["สหกรณ์ออมทรัพย์ (2)",5000],["เงินฝากธนาคาร AIS",1000]], "save") },
   { key: "debt", label: "ผ่อนชำระหนี้", color: "#8A5A2B",
-    items: [["ค่าผ่อนบ้าน/คอนโด",18700],["ค่าผ่อนคอนโด",28000],["สถาบันการเงิน TMB",5950],["สถาบันการเงิน KKP",8864],["สถาบันการเงิน CIMB",9380],["สถาบันการเงิน UOB",9300],["ค่าผ่อนหนี้สหกรณ์",7900]]
-      .map(([name, value], i) => ({ id: `debt-${i}`, name, value })) },
+    items: mapItems([["ค่าผ่อนบ้าน/คอนโด",18700],["ค่าผ่อนคอนโด",28000],["สถาบันการเงิน TMB",5950],["สถาบันการเงิน KKP",8864],["สถาบันการเงิน CIMB",9380],["สถาบันการเงิน UOB",9300],["ค่าผ่อนหนี้สหกรณ์",7900]], "debt") },
 ];
 
 const DEFAULT_VARIABLE_EXPENSE_GROUPS = [
   { key: "var-household", label: "ของใช้ในบ้าน", color: "#7A4F22",
-    items: [["บัตรเครดิต · Dreamex50 (ผ่อน 8/10)",3772],["บัตรเครดิต · DreameH16 (ผ่อน 5/10)",2358],["บัตรเครดิต · URPet (ผ่อน 5/10)",585]]
-      .map(([name, value], i) => ({ id: `var-household-${i}`, name, value })) },
+    items: mapItems([["บัตรเครดิต · Dreamex50 (ผ่อน 8/10)",3772],["บัตรเครดิต · DreameH16 (ผ่อน 5/10)",2358],["บัตรเครดิต · URPet (ผ่อน 5/10)",585]], "var-household") },
   { key: "var-repair", label: "ซ่อมแซมบ้าน", color: "#8A5A2B",
-    items: [["บัตรเครดิต · SECOM",5000]].map(([name, value], i) => ({ id: `var-repair-${i}`, name, value })) },
+    items: mapItems([["บัตรเครดิต · SECOM",5000]], "var-repair") },
   { key: "var-electric", label: "ไฟฟ้า", color: "#9C6B37",
-    items: [["บัตรเครดิต · H43",4000],["บัตรเครดิต · คอนโด",300]]
-      .map(([name, value], i) => ({ id: `var-electric-${i}`, name, value })) },
+    items: mapItems([["บัตรเครดิต · H43",4000],["บัตรเครดิต · คอนโด",300]], "var-electric") },
   { key: "var-phone", label: "โทรศัพท์", color: "#B07E45",
-    items: [["บัตรเครดิต · Dad",600],["บัตรเครดิต (ไม่ระบุร้านค้า)",3300]]
-      .map(([name, value], i) => ({ id: `var-phone-${i}`, name, value })) },
+    items: mapItems([["บัตรเครดิต · Dad",600],["บัตรเครดิต (ไม่ระบุร้านค้า)",3300]], "var-phone") },
   { key: "var-insurance", label: "ประกันชีวิต", color: "#C99A57",
-    items: [["บัตรเครดิต · AIA",3700]].map(([name, value], i) => ({ id: `var-insurance-${i}`, name, value })) },
+    items: mapItems([["บัตรเครดิต · AIA",3700]], "var-insurance") },
   { key: "var-furniture", label: "เฟอร์นิเจอร์", color: "#D9AF78",
-    items: [["บัตรเครดิต · Coway",1520],["บัตรเครดิต · LG",922]]
-      .map(([name, value], i) => ({ id: `var-furniture-${i}`, name, value })) },
+    items: mapItems([["บัตรเครดิต · Coway",1520],["บัตรเครดิต · LG",922]], "var-furniture") },
   { key: "var-app", label: "แอปพลิเคชั่น", color: "#E6C596",
-    items: [["บัตรเครดิต · YouTube",399],["บัตรเครดิต · Google One",350],["บัตรเครดิต · Netflix",99],["บัตรเครดิต · iCloud",99]]
-      .map(([name, value], i) => ({ id: `var-app-${i}`, name, value })) },
+    items: mapItems([["บัตรเครดิต · YouTube",399],["บัตรเครดิต · Google One",350],["บัตรเครดิต · Netflix",99],["บัตรเครดิต · iCloud",99]], "var-app") },
 ];
 
 const INCOME = { total: 132160, items: [["บริษัท 1 (เงินเดือน)",102160],["รายได้เสริม",30000]] };
@@ -121,6 +119,8 @@ const INCOME = { total: 132160, items: [["บริษัท 1 (เงินเ�
 // before each one comes due. repeatMonths lets a bill recur on its own cycle
 // (e.g. every 3 months) instead of just once — the dashboard automatically
 // rolls the due date forward once it's passed, so you don't have to.
+// Picking a 3/6/12-month cadence defaults the due day to the 1st of that
+// month as a starting point, but the exact date is always freely editable.
 const REMINDER_WINDOW_DAYS = 30;
 const DEFAULT_ANNUAL_BILLS = [
   { id: "annual-0", name: "ค่าขยะ", value: 300, dueDate: "2027-06-16", repeatMonths: 12 },
@@ -145,6 +145,36 @@ function startOfToday() {
 }
 function addMonths(d, months) {
   return new Date(d.getFullYear(), d.getMonth() + months, d.getDate());
+}
+function daysInMonth(year, monthIndex0) {
+  return new Date(year, monthIndex0 + 1, 0).getDate();
+}
+// Cadences of 3/6/12 months default the reminder to the 1st of the due month
+// (a sensible starting point), but the exact date stays freely editable.
+function fixesToDay1(repeatMonths) {
+  const m = Number(repeatMonths) || 0;
+  return m === 3 || m === 6 || m === 12;
+}
+function forceDay1(dateStr) {
+  if (!dateStr) return dateStr;
+  const parts = dateStr.split("-");
+  return parts.length === 3 ? `${parts[0]}-${parts[1]}-01` : dateStr;
+}
+// Next occurrence of a day-of-month reminder (for monthly fixed/variable
+// items), clamped so e.g. day 31 in February safely becomes the last day of
+// that month instead of overflowing into March.
+function nextMonthlyDate(dueDay) {
+  const day = Number(dueDay) || 0;
+  if (day <= 0) return null;
+  const today = startOfToday();
+  let y = today.getFullYear(), m = today.getMonth();
+  let candidate = new Date(y, m, Math.min(day, daysInMonth(y, m)));
+  if (candidate < today) {
+    m += 1;
+    if (m > 11) { m = 0; y += 1; }
+    candidate = new Date(y, m, Math.min(day, daysInMonth(y, m)));
+  }
+  return candidate;
 }
 // Rolls a bill's anchor due date forward by its repeat cycle until it lands
 // on today or later — so a quarterly bill from months ago still shows its
@@ -201,6 +231,26 @@ function liveGroups(baseGroupsT, editing, draft) {
 }
 function cloneAsDraft(groups) {
   return groups.map((g) => ({ ...g, items: g.items.map((it) => ({ ...it, value: String(it.value) })) }));
+}
+// Moves `draggedId` to sit where `targetId` currently is within its group
+// (used by the drag-and-drop reordering for assets/liabilities).
+function reorderItemInGroups(groups, groupKey, draggedId, targetId) {
+  if (draggedId === targetId) return groups;
+  return groups.map((g) => {
+    if (g.key !== groupKey) return g;
+    const items = [...g.items];
+    const fromIdx = items.findIndex((it) => it.id === draggedId);
+    const toIdx = items.findIndex((it) => it.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return g;
+    const [moved] = items.splice(fromIdx, 1);
+    items.splice(toIdx, 0, moved);
+    return { ...g, items };
+  });
+}
+function clampDueDay(value) {
+  const n = parseInt(value, 10);
+  if (!n || n < 1) return null;
+  return Math.min(31, n);
 }
 // Compact "ก.ค.69" style label from a "2569-07" month key, for chart axes.
 function monthLabelFromKey(key) {
@@ -369,11 +419,24 @@ function MonthlyTrendChart({ history, currentKey }) {
 
 // Read-only (or checkable) list of groups + items. Used for assets, liabilities,
 // and — when not being edited — the fixed/variable expense checklists.
-function GroupList({ groups, total, checkable = false, paid = {}, onToggle }) {
+function GroupList({ groups, total, checkable = false, paid = {}, onToggle, showDueInfo = false }) {
   const [open, setOpen] = useState(null);
   return (
     <div style={{ marginTop: 14 }}>
-      {groups.map((g) => (
+      {groups.map((g) => {
+        // When due-day info is shown, list items with a due day soonest-first;
+        // items with no due day set keep their original order after those.
+        const items = showDueInfo
+          ? [...g.items].sort((a, b) => {
+              const da = nextMonthlyDate(a.dueDay);
+              const db = nextMonthlyDate(b.dueDay);
+              if (da && db) return da - db;
+              if (da) return -1;
+              if (db) return 1;
+              return 0;
+            })
+          : g.items;
+        return (
         <div key={g.key} style={{ borderBottom: "1px solid #E6E0D2" }}>
           <button
             onClick={() => setOpen(open === g.key ? null : g.key)}
@@ -391,30 +454,42 @@ function GroupList({ groups, total, checkable = false, paid = {}, onToggle }) {
           </button>
           {open === g.key && (
             <div style={{ padding: "0 2px 12px 22px", display: "flex", flexDirection: "column", gap: 8 }}>
-              {g.items.length === 0 && (
+              {items.length === 0 && (
                 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#A79E8E" }}>ไม่มีรายการ</div>
               )}
-              {g.items.map((it) => {
+              {items.map((it) => {
                 const isPaid = checkable && !!paid[it.id];
+                const dueNext = showDueInfo ? nextMonthlyDate(it.dueDay) : null;
+                const dueDays = dueNext ? daysUntilDate(dueNext) : null;
+                const overdue = dueDays !== null && dueDays < 0;
+                const soon = dueDays !== null && dueDays >= 0 && dueDays <= REMINDER_WINDOW_DAYS;
                 return (
                   <div key={it.id} onClick={checkable ? () => onToggle(it.id) : undefined}
                     style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, cursor: checkable ? "pointer" : "default" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 8, color: isPaid ? "#A79E8E" : "#6B6459" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, color: isPaid ? "#A79E8E" : "#6B6459", minWidth: 0 }}>
                       {checkable && (
                         <span style={{ width: 16, height: 16, borderRadius: 5, border: `1.5px solid ${isPaid ? "#2F5D46" : "#C9C2B2"}`, background: isPaid ? "#2F5D46" : "transparent", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 10, color: "#fff" }}>
                           {isPaid ? "✓" : ""}
                         </span>
                       )}
-                      <span style={{ textDecoration: isPaid ? "line-through" : "none" }}>{it.name || "(ไม่มีชื่อ)"}</span>
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ textDecoration: isPaid ? "line-through" : "none", display: "block" }}>{it.name || "(ไม่มีชื่อ)"}</span>
+                        {dueNext && (
+                          <span style={{ display: "block", fontSize: 11, marginTop: 1, color: overdue ? "#7A2E1F" : soon ? "#AD8A2E" : "#A79E8E" }}>
+                            ทุกวันที่ {it.dueDay} · {overdue ? "เลยกำหนดแล้ว" : soon ? `อีก ${dueDays} วัน` : formatDate(dueNext)}
+                          </span>
+                        )}
+                      </span>
                     </span>
-                    <span style={{ color: isPaid ? "#A79E8E" : "#202B29", textDecoration: isPaid ? "line-through" : "none" }}>{fmt(it.value)}</span>
+                    <span style={{ color: isPaid ? "#A79E8E" : "#202B29", textDecoration: isPaid ? "line-through" : "none", flexShrink: 0, marginLeft: 8 }}>{fmt(it.value)}</span>
                   </div>
                 );
               })}
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -431,8 +506,43 @@ const hintStyle = { fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11
 // Editable version of a group list: number input always, name input + add/remove
 // only when the section supports full item management (the expense checklists).
 // When allowCategoryManagement is on, whole categories (groups) can also be
-// renamed, added, or removed — used for expense sections only.
-function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveItem, editableName = true, allowAddRemove = true, allowCategoryManagement = false, onRenameGroup, onAddGroup, onRemoveGroup }) {
+// renamed, added, or removed — used for expense sections only. allowReorder
+// turns on drag-and-drop reordering (via pointer events, so it works with
+// both mouse and touch) using a small grip handle per item.
+function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveItem, editableName = true, allowAddRemove = true, allowCategoryManagement = false, onRenameGroup, onAddGroup, onRemoveGroup, allowDueDay = false, onChangeDueDay, allowReorder = false, onReorderItem }) {
+  const itemRefs = useRef({});
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
+  const [drag, setDrag] = useState(null); // { groupKey, id }
+
+  useEffect(() => {
+    if (!drag) return;
+    const handleMove = (e) => {
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const group = groupsRef.current.find((g) => g.key === drag.groupKey);
+      if (!group) return;
+      let hoverId = null;
+      for (const it of group.items) {
+        const node = itemRefs.current[it.id];
+        if (!node) continue;
+        const rect = node.getBoundingClientRect();
+        if (clientY >= rect.top && clientY <= rect.bottom) { hoverId = it.id; break; }
+      }
+      if (hoverId && hoverId !== drag.id) {
+        onReorderItem(drag.groupKey, drag.id, hoverId);
+      }
+    };
+    const handleUp = () => setDrag(null);
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleUp);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleUp);
+    };
+  }, [drag]);
+
   return (
     <div style={{ marginTop: 14 }}>
       {groups.map((g) => {
@@ -456,23 +566,51 @@ function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveI
               )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {g.items.map((it) => (
-                <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  {editableName ? (
-                    <input type="text" value={it.name} placeholder="ชื่อรายการ"
-                      onChange={(e) => onChangeName(g.key, it.id, e.target.value)}
-                      style={inputTextStyle} />
-                  ) : (
-                    <span style={{ flex: 1, minWidth: 0, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#6B6459" }}>{it.name}</span>
-                  )}
-                  <input type="number" inputMode="decimal" value={it.value} placeholder="0"
-                    onChange={(e) => onChangeValue(g.key, it.id, e.target.value)}
-                    style={inputNumberStyle} />
-                  {allowAddRemove && (
-                    <button onClick={() => onRemoveItem(g.key, it.id)} title="ลบรายการ" style={removeBtnStyle}>✕</button>
-                  )}
-                </div>
-              ))}
+              {g.items.map((it, idx) => {
+                const isDragging = !!drag && drag.id === it.id;
+                return (
+                  <div key={it.id}
+                    ref={(el) => { if (el) itemRefs.current[it.id] = el; }}
+                    style={{
+                      display: "flex", flexDirection: "column", gap: 6, paddingBottom: 8,
+                      borderBottom: idx < g.items.length - 1 ? "1px dashed #EDE8DC" : "none",
+                      opacity: isDragging ? 0.55 : 1,
+                      background: isDragging ? "#FBF3DE" : "transparent",
+                      borderRadius: isDragging ? 8 : 0,
+                      transition: "opacity .1s",
+                    }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {allowReorder && (
+                        <span
+                          onPointerDown={(e) => { e.preventDefault(); setDrag({ groupKey: g.key, id: it.id }); }}
+                          title="ลากเพื่อจัดลำดับ"
+                          style={{ cursor: "grab", touchAction: "none", userSelect: "none", color: "#A79E8E", fontSize: 17, flexShrink: 0, padding: "0 4px", lineHeight: 1 }}>⠿</span>
+                      )}
+                      {editableName ? (
+                        <input type="text" value={it.name} placeholder="ชื่อรายการ"
+                          onChange={(e) => onChangeName(g.key, it.id, e.target.value)}
+                          style={inputTextStyle} />
+                      ) : (
+                        <span style={{ flex: 1, minWidth: 0, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#6B6459" }}>{it.name}</span>
+                      )}
+                      <input type="number" inputMode="decimal" value={it.value} placeholder="0"
+                        onChange={(e) => onChangeValue(g.key, it.id, e.target.value)}
+                        style={inputNumberStyle} />
+                      {allowAddRemove && (
+                        <button onClick={() => onRemoveItem(g.key, it.id)} title="ลบรายการ" style={removeBtnStyle}>✕</button>
+                      )}
+                    </div>
+                    {allowDueDay && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#A79E8E" }}>ครบกำหนดวันที่ (1–31) ของทุกเดือน:</span>
+                        <input type="number" min="1" max="31" value={it.dueDay || ""} placeholder="ไม่ระบุ"
+                          onChange={(e) => onChangeDueDay(g.key, it.id, e.target.value)}
+                          style={{ width: 70, textAlign: "right", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, border: "1px solid #C9C2B2", borderRadius: 7, padding: "4px 6px", color: "#202B29", background: "#FFFDF8" }} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             {allowAddRemove && (
               <button onClick={() => onAddItem(g.key)} style={addBtnStyle}>+ เพิ่มรายการ</button>
@@ -495,7 +633,7 @@ function UpcomingBillsBanner({ bills }) {
     <div style={{ background: "#FBF3DE", border: "1px solid #E8CE8A", borderRadius: 14, padding: "14px 16px", marginBottom: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <span style={{ fontSize: 15 }}>🔔</span>
-        <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, color: "#7A5C1E" }}>รายจ่ายประจำปีใกล้ถึงกำหนด</span>
+        <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, color: "#7A5C1E" }}>รายจ่ายใกล้ถึงกำหนดชำระ</span>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {bills.map((b) => (
@@ -549,6 +687,17 @@ function AnnualBillsList({ bills }) {
 
 // Editable list of annual bills: name, amount, and due date, plus add/remove.
 function AnnualBillsEditor({ bills, onChangeField, onAdd, onRemove }) {
+  const dateInputStyle = { flex: 1, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8" };
+  // Switching to a 3/6/12-month cadence defaults the due day to the 1st of
+  // the month (of whatever date is already set, or this month if blank) —
+  // just a convenient starting point; the date field stays fully editable.
+  const handleRepeatChange = (b, months) => {
+    onChangeField(b.id, "repeatMonths", months);
+    if (fixesToDay1(months)) {
+      const base = parseISODate(b.dueDate) || new Date();
+      onChangeField(b.id, "dueDate", `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}-01`);
+    }
+  };
   return (
     <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
       {bills.map((b) => (
@@ -564,9 +713,9 @@ function AnnualBillsEditor({ bills, onChangeField, onAdd, onRemove }) {
               style={{ ...inputNumberStyle, width: "auto", flex: 1 }} />
             <input type="date" value={b.dueDate || ""}
               onChange={(e) => onChangeField(b.id, "dueDate", e.target.value)}
-              style={{ flex: 1, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8" }} />
+              style={dateInputStyle} />
           </div>
-          <select value={Number(b.repeatMonths) || 0} onChange={(e) => onChangeField(b.id, "repeatMonths", Number(e.target.value))}
+          <select value={Number(b.repeatMonths) || 0} onChange={(e) => handleRepeatChange(b, Number(e.target.value))}
             style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8" }}>
             {REPEAT_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
           </select>
@@ -759,20 +908,28 @@ function Dashboard() {
   // tracked here for reminders.
   const annualBills = allData.annualBills || DEFAULT_ANNUAL_BILLS;
   const annualTotal = annualBills.reduce((s, b) => s + (Number(b.value) || 0), 0);
-  const upcomingBills = annualBills
-    .map((b) => {
-      const next = nextOccurrence(b.dueDate, b.repeatMonths);
-      return { ...b, days: daysUntilDate(next) };
-    })
-    .filter((b) => b.days !== null && b.days <= REMINDER_WINDOW_DAYS)
-    .sort((a, b) => a.days - b.days);
+  const annualUpcoming = annualBills
+    .map((b) => ({ ...b, days: daysUntilDate(nextOccurrence(b.dueDate, b.repeatMonths)) }))
+    .filter((b) => b.days !== null && b.days <= REMINDER_WINDOW_DAYS);
 
-  // ---- assets (full CRUD: add / remove / rename / amount) ----
+  // Monthly fixed/variable items that have a due-day-of-month set — merged
+  // with the annual bills above into one combined reminder feed, always
+  // sorted soonest-first regardless of whether it's monthly, every 3/6
+  // months, or yearly.
+  const monthlyUpcoming = checklistItems
+    .filter((it) => it.dueDay)
+    .map((it) => ({ ...it, days: daysUntilDate(nextMonthlyDate(it.dueDay)) }))
+    .filter((it) => it.days !== null && it.days <= REMINDER_WINDOW_DAYS);
+
+  const upcomingBills = [...annualUpcoming, ...monthlyUpcoming].sort((a, b) => a.days - b.days);
+
+  // ---- assets (full CRUD: add / remove / rename / amount / reorder) ----
   const startEditAssets = () => { setAssetDraft(cloneAsDraft(assetGroups)); setEditingAssets(true); };
   const updateAssetName = (gk, id, name) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
   const updateAssetValue = (gk, id, value) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
   const addAssetItem = (gk) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
   const removeAssetItem = (gk, id) => setAssetDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const reorderAssetItem = (gk, draggedId, targetId) => setAssetDraft((prev) => reorderItemInGroups(prev, gk, draggedId, targetId));
   const cancelEditAssets = () => { setEditingAssets(false); setAssetDraft(null); };
   const saveEditAssets = () => {
     const finalGroups = assetDraft.map((g) => ({ ...g, items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
@@ -780,12 +937,13 @@ function Dashboard() {
     setEditingAssets(false); setAssetDraft(null);
   };
 
-  // ---- liabilities (full CRUD: add / remove / rename / amount, same as assets) ----
+  // ---- liabilities (full CRUD: add / remove / rename / amount / reorder, same as assets) ----
   const startEditLiabilities = () => { setLiabilityDraft(cloneAsDraft(liabilityGroups)); setEditingLiabilities(true); };
   const updateLiabilityName = (gk, id, name) => setLiabilityDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
   const updateLiabilityValue = (gk, id, value) => setLiabilityDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
   const addLiabilityItem = (gk) => setLiabilityDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
   const removeLiabilityItem = (gk, id) => setLiabilityDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const reorderLiabilityItem = (gk, draggedId, targetId) => setLiabilityDraft((prev) => reorderItemInGroups(prev, gk, draggedId, targetId));
   const cancelEditLiabilities = () => { setEditingLiabilities(false); setLiabilityDraft(null); };
   const saveEditLiabilities = () => {
     const finalGroups = liabilityDraft.map((g) => ({ ...g, items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
@@ -793,34 +951,36 @@ function Dashboard() {
     setEditingLiabilities(false); setLiabilityDraft(null);
   };
 
-  // ---- fixed expenses (full CRUD: add / remove / rename items, plus manage whole categories) ----
+  // ---- fixed expenses (full CRUD: add / remove / rename items, due-day reminders, plus manage whole categories) ----
   const startEditFixed = () => { setFixedDraft(cloneAsDraft(fixedGroups)); setEditingFixed(true); };
   const updateFixedName = (gk, id, name) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
   const updateFixedValue = (gk, id, value) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
-  const addFixedItem = (gk) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
+  const updateFixedDueDay = (gk, id, value) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, dueDay: value } : it) }));
+  const addFixedItem = (gk) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0", dueDay: null }] }));
   const removeFixedItem = (gk, id) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
   const renameFixedGroup = (gk, label) => setFixedDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, label }));
   const addFixedGroup = () => setFixedDraft((prev) => [...prev, { key: makeGroupId(), label: "", color: NEW_CATEGORY_COLORS[prev.length % NEW_CATEGORY_COLORS.length], items: [] }]);
   const removeFixedGroup = (gk) => setFixedDraft((prev) => prev.filter((g) => g.key !== gk));
   const cancelEditFixed = () => { setEditingFixed(false); setFixedDraft(null); };
   const saveEditFixed = () => {
-    const finalGroups = fixedDraft.map((g) => ({ ...g, label: (g.label || "").trim() || "หมวดใหม่", items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    const finalGroups = fixedDraft.map((g) => ({ ...g, label: (g.label || "").trim() || "หมวดใหม่", items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0), dueDay: clampDueDay(it.dueDay) })) }));
     persist({ ...allData, fixedGroups: finalGroups });
     setEditingFixed(false); setFixedDraft(null);
   };
 
-  // ---- variable expenses (full CRUD: add / remove / rename items, plus manage whole categories) ----
+  // ---- variable expenses (full CRUD: add / remove / rename items, due-day reminders, plus manage whole categories) ----
   const startEditVariable = () => { setVariableDraft(cloneAsDraft(variableGroups)); setEditingVariable(true); };
   const updateVariableName = (gk, id, name) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
   const updateVariableValue = (gk, id, value) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
-  const addVariableItem = (gk) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
+  const updateVariableDueDay = (gk, id, value) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, dueDay: value } : it) }));
+  const addVariableItem = (gk) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0", dueDay: null }] }));
   const removeVariableItem = (gk, id) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
   const renameVariableGroup = (gk, label) => setVariableDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, label }));
   const addVariableGroup = () => setVariableDraft((prev) => [...prev, { key: makeGroupId(), label: "", color: NEW_CATEGORY_COLORS[prev.length % NEW_CATEGORY_COLORS.length], items: [] }]);
   const removeVariableGroup = (gk) => setVariableDraft((prev) => prev.filter((g) => g.key !== gk));
   const cancelEditVariable = () => { setEditingVariable(false); setVariableDraft(null); };
   const saveEditVariable = () => {
-    const finalGroups = variableDraft.map((g) => ({ ...g, label: (g.label || "").trim() || "หมวดใหม่", items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    const finalGroups = variableDraft.map((g) => ({ ...g, label: (g.label || "").trim() || "หมวดใหม่", items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0), dueDay: clampDueDay(it.dueDay) })) }));
     persist({ ...allData, variableGroups: finalGroups });
     setEditingVariable(false); setVariableDraft(null);
   };
@@ -828,7 +988,11 @@ function Dashboard() {
   // ---- annual bills (name, amount, due date; add / remove) ----
   const startEditAnnual = () => { setAnnualDraft(annualBills.map((b) => ({ ...b, value: String(b.value) }))); setEditingAnnual(true); };
   const updateAnnualField = (id, field, value) => setAnnualDraft((prev) => prev.map((b) => b.id === id ? { ...b, [field]: value } : b));
-  const addAnnualBill = () => setAnnualDraft((prev) => [...prev, { id: makeId(), name: "", value: "0", dueDate: "", repeatMonths: 12 }]);
+  const addAnnualBill = () => {
+    const now = new Date();
+    const defaultDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    setAnnualDraft((prev) => [...prev, { id: makeId(), name: "", value: "0", dueDate: defaultDate, repeatMonths: 12 }]);
+  };
   const removeAnnualBill = (id) => setAnnualDraft((prev) => prev.filter((b) => b.id !== id));
   const cancelEditAnnual = () => { setEditingAnnual(false); setAnnualDraft(null); };
   const saveEditAnnual = () => {
@@ -856,9 +1020,7 @@ function Dashboard() {
           <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, letterSpacing: "0.1em", color: "#AD8A2E", fontWeight: 600, textTransform: "uppercase" }}>
             HAPPY MONEY · ข้อมูลล่าสุด {lastUpdatedLabel}
           </div>
-          <h1 style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 24, color: "#202B29", margin: "6px 0 0" }}>ภาพรวมการเงิน</h1>
-          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459", marginTop: 4 }}>
-            Dashboard ประจำเดือน{CURRENT_MONTH_FULL}
+          <h1 style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 20, color: "#202B29", margin: "6px 0 0" }}>ภาพรวมการเงิน ประจำเดือน{CURRENT_MONTH_FULL} </h1>
           </div>
         </div>
 
@@ -908,7 +1070,8 @@ function Dashboard() {
             </div>
             <CompositionBar groups={displayAssetGroups} total={totalAssets} />
             {editingAssets ? (
-              <GroupEditor groups={assetDraft} onChangeValue={updateAssetValue} onChangeName={updateAssetName} onAddItem={addAssetItem} onRemoveItem={removeAssetItem} />
+              <GroupEditor groups={assetDraft} onChangeValue={updateAssetValue} onChangeName={updateAssetName} onAddItem={addAssetItem} onRemoveItem={removeAssetItem}
+                allowReorder onReorderItem={reorderAssetItem} />
             ) : (
               <GroupList groups={displayAssetGroups} total={totalAssets} />
             )}
@@ -922,7 +1085,8 @@ function Dashboard() {
             </div>
             <CompositionBar groups={displayLiabilityGroups} total={totalLiab} />
             {editingLiabilities ? (
-              <GroupEditor groups={liabilityDraft} onChangeValue={updateLiabilityValue} onChangeName={updateLiabilityName} onAddItem={addLiabilityItem} onRemoveItem={removeLiabilityItem} />
+              <GroupEditor groups={liabilityDraft} onChangeValue={updateLiabilityValue} onChangeName={updateLiabilityName} onAddItem={addLiabilityItem} onRemoveItem={removeLiabilityItem}
+                allowReorder onReorderItem={reorderLiabilityItem} />
             ) : (
               <GroupList groups={displayLiabilityGroups} total={totalLiab} />
             )}
@@ -1002,11 +1166,12 @@ function Dashboard() {
               </div>
               {editingFixed ? (
                 <GroupEditor groups={fixedDraft} onChangeValue={updateFixedValue} onChangeName={updateFixedName} onAddItem={addFixedItem} onRemoveItem={removeFixedItem}
-                  allowCategoryManagement onRenameGroup={renameFixedGroup} onAddGroup={addFixedGroup} onRemoveGroup={removeFixedGroup} />
+                  allowCategoryManagement onRenameGroup={renameFixedGroup} onAddGroup={addFixedGroup} onRemoveGroup={removeFixedGroup}
+                  allowDueDay onChangeDueDay={updateFixedDueDay} />
               ) : (
-                <GroupList groups={displayFixedGroups} total={fixedTotal} checkable paid={paid} onToggle={togglePaid} />
+                <GroupList groups={displayFixedGroups} total={fixedTotal} checkable paid={paid} onToggle={togglePaid} showDueInfo />
               )}
-              {editingFixed && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
+              {editingFixed && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ ใส่วันที่ครบกำหนดของทุกเดือนได้ (ไม่บังคับ) แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
             </div>
 
             <div style={{ marginTop: isDesktop ? 0 : 20 }}>
@@ -1016,11 +1181,12 @@ function Dashboard() {
               </div>
               {editingVariable ? (
                 <GroupEditor groups={variableDraft} onChangeValue={updateVariableValue} onChangeName={updateVariableName} onAddItem={addVariableItem} onRemoveItem={removeVariableItem}
-                  allowCategoryManagement onRenameGroup={renameVariableGroup} onAddGroup={addVariableGroup} onRemoveGroup={removeVariableGroup} />
+                  allowCategoryManagement onRenameGroup={renameVariableGroup} onAddGroup={addVariableGroup} onRemoveGroup={removeVariableGroup}
+                  allowDueDay onChangeDueDay={updateVariableDueDay} />
               ) : (
-                <GroupList groups={displayVariableGroups} total={variableTotal} checkable paid={paid} onToggle={togglePaid} />
+                <GroupList groups={displayVariableGroups} total={variableTotal} checkable paid={paid} onToggle={togglePaid} showDueInfo />
               )}
-              {editingVariable && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
+              {editingVariable && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ ใส่วันที่ครบกำหนดของทุกเดือนได้ (ไม่บังคับ) แล้วกด "บันทึก" เพื่อจำการเปลี่ยนแปลงไว้ใช้ครั้งถัดไป</div>}
             </div>
           </div>
         </div>
@@ -1039,7 +1205,7 @@ function Dashboard() {
         </div>
 
         <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน รายจ่าย หรือรายจ่ายประจำปี เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) หมวดรายจ่ายประจำปีจะขึ้นแจ้งเตือนด้านบนสุดของหน้าโดยอัตโนมัติเมื่อใกล้ถึงวันครบกำหนด (ล่วงหน้า {REMINDER_WINDOW_DAYS} วัน) และไม่ถูกรวมเข้าไปในยอดรายจ่ายรายเดือน สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
+          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน รายจ่าย หรือรายจ่ายประจำปี เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ ในหมวดสินทรัพย์และหนี้สิน มีไอคอน ⠿ ให้ลาก (drag) จัดเรียงลำดับรายการเองได้ด้วย ในหมวดรายจ่ายคงที่/ผันแปร ใส่วันที่ครบกำหนดของทุกเดือน (1-31) ได้ต่อรายการ รายการที่มีวันที่จะเรียงขึ้นก่อนตามความใกล้ถึงกำหนด แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) แบนเนอร์แจ้งเตือนด้านบนสุดของหน้ารวมทั้งรายจ่ายรายเดือนที่ตั้งวันที่ไว้และรายจ่ายประจำปี/ตามรอบ เรียงตามวันครบกำหนดที่ใกล้ที่สุดก่อนเสมอ (ล่วงหน้า {REMINDER_WINDOW_DAYS} วัน) โดยรายจ่ายประจำปี/ตามรอบไม่ถูกรวมเข้าไปในยอดรายจ่ายรายเดือน สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
         </div>
       </div>
     </div>
