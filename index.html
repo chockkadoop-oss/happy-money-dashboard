@@ -208,6 +208,19 @@ const REPEAT_OPTIONS = [
   { value: 6, label: "ทุก 6 เดือน" },
   { value: 12, label: "ทุกปี" },
 ];
+// Groups bills by cadence so items with the same repeat cycle sit together
+// (all the annual ones together, all the quarterly ones together, etc.)
+// instead of one flat mixed list.
+const ANNUAL_GROUP_ORDER = [12, 6, 3, 1, 0];
+function groupBillsByCadence(bills) {
+  return ANNUAL_GROUP_ORDER
+    .map((months) => ({
+      months,
+      label: (REPEAT_OPTIONS.find((r) => r.value === months) || {}).label || "",
+      items: bills.filter((b) => (Number(b.repeatMonths) || 0) === months),
+    }))
+    .filter((g) => g.items.length > 0);
+}
 
 // 🔧 SETUP: paste your Google Apps Script Web App URL here (ends in /exec).
 // Until you do, all data is kept in this browser (localStorage) as a fallback.
@@ -445,7 +458,17 @@ function GroupList({ groups, total, checkable = false, paid = {}, onToggle, show
             <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ width: 10, height: 10, borderRadius: 3, background: g.color, flexShrink: 0 }} />
               <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 14, color: "#202B29" }}>{g.label}</span>
+              {checkable && (() => {
+                const unpaidCount = items.filter((it) => !paid[it.id]).length;
+                return unpaidCount > 0 ? (
+                  <span title={`ยังไม่ได้ติ๊ก ${unpaidCount} รายการ`}
+                    style={{ minWidth: 16, height: 16, padding: "0 5px", borderRadius: 999, background: "#F0C674", color: "#5C4A1A", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    {unpaidCount}
+                  </span>
+                ) : null;
+              })()}
             </span>
+
             <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#6B6459" }}>{pct(g.value, total)}</span>
               <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 14, color: "#202B29" }}>{fmt(g.value)}</span>
@@ -655,29 +678,36 @@ function AnnualBillsList({ bills }) {
     const next = nextOccurrence(b.dueDate, b.repeatMonths);
     return { ...b, next, days: daysUntilDate(next) };
   });
-  const sorted = [...withNext].sort((a, b) => {
-    if (!a.next) return 1;
-    if (!b.next) return -1;
-    return a.next - b.next;
-  });
+  const groups = groupBillsByCadence(withNext);
   return (
-    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-      {sorted.length === 0 && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#A79E8E" }}>ไม่มีรายการ</div>}
-      {sorted.map((b) => {
-        const overdue = b.days !== null && b.days < 0;
-        const soon = b.days !== null && b.days >= 0 && b.days <= REMINDER_WINDOW_DAYS;
-        const repeatLabel = (REPEAT_OPTIONS.find((r) => r.value === (Number(b.repeatMonths) || 0)) || REPEAT_OPTIONS[0]).label;
+    <div style={{ marginTop: 14 }}>
+      {groups.length === 0 && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#A79E8E" }}>ไม่มีรายการ</div>}
+      {groups.map((g, gi) => {
+        const sorted = [...g.items].sort((a, b) => {
+          if (!a.next) return 1;
+          if (!b.next) return -1;
+          return a.next - b.next;
+        });
         return (
-          <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, borderBottom: "1px solid #E6E0D2", paddingBottom: 10 }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ color: "#202B29" }}>{b.name}</div>
-              <div style={{ fontSize: 11.5, color: overdue ? "#7A2E1F" : soon ? "#AD8A2E" : "#A79E8E", marginTop: 2 }}>
-                กำหนด {formatDate(b.next)} · {repeatLabel}
-                {overdue && " · เลยกำหนดแล้ว"}
-                {soon && !overdue && ` · อีก ${b.days} วัน`}
-              </div>
+          <div key={g.months} style={{ marginBottom: gi < groups.length - 1 ? 18 : 0 }}>
+            <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, fontWeight: 600, color: "#AD8A2E", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>{g.label}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {sorted.map((b) => {
+                const overdue = b.days !== null && b.days < 0;
+                const soon = b.days !== null && b.days >= 0 && b.days <= REMINDER_WINDOW_DAYS;
+                return (
+                  <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, borderBottom: "1px solid #E6E0D2", paddingBottom: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0, color: "#202B29" }}>{b.name}</div>
+                    <div style={{ flex: 1, textAlign: "center", fontSize: 11.5, color: overdue ? "#7A2E1F" : soon ? "#AD8A2E" : "#A79E8E" }}>
+                      กำหนด {formatDate(b.next)}
+                      {overdue && " · เลยกำหนดแล้ว"}
+                      {soon && !overdue && ` · อีก ${b.days} วัน`}
+                    </div>
+                    <span style={{ fontWeight: 700, color: "#202B29", flexShrink: 0, textAlign: "right", minWidth: 80 }}>{fmt(b.value)}</span>
+                  </div>
+                );
+              })}
             </div>
-            <span style={{ fontWeight: 700, color: "#202B29", flexShrink: 0 }}>{fmt(b.value)}</span>
           </div>
         );
       })}
@@ -698,27 +728,35 @@ function AnnualBillsEditor({ bills, onChangeField, onAdd, onRemove }) {
       onChangeField(b.id, "dueDate", `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}-01`);
     }
   };
+  const groups = groupBillsByCadence(bills);
   return (
-    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-      {bills.map((b) => (
-        <div key={b.id} style={{ border: "1px solid #E6E0D2", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            <input type="text" value={b.name} placeholder="ชื่อรายการ"
-              onChange={(e) => onChangeField(b.id, "name", e.target.value)} style={inputTextStyle} />
-            <button onClick={() => onRemove(b.id)} title="ลบรายการ" style={removeBtnStyle}>✕</button>
+    <div style={{ marginTop: 14 }}>
+      {groups.map((g, gi) => (
+        <div key={g.months} style={{ marginBottom: 14 }}>
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, fontWeight: 600, color: "#AD8A2E", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>{g.label}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {g.items.map((b) => (
+              <div key={b.id} style={{ border: "1px solid #E6E0D2", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input type="text" value={b.name} placeholder="ชื่อรายการ"
+                    onChange={(e) => onChangeField(b.id, "name", e.target.value)} style={inputTextStyle} />
+                  <button onClick={() => onRemove(b.id)} title="ลบรายการ" style={removeBtnStyle}>✕</button>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input type="number" inputMode="decimal" value={b.value} placeholder="0"
+                    onChange={(e) => onChangeField(b.id, "value", e.target.value)}
+                    style={{ ...inputNumberStyle, width: "auto", flex: 1 }} />
+                  <input type="date" value={b.dueDate || ""}
+                    onChange={(e) => onChangeField(b.id, "dueDate", e.target.value)}
+                    style={dateInputStyle} />
+                </div>
+                <select value={Number(b.repeatMonths) || 0} onChange={(e) => handleRepeatChange(b, Number(e.target.value))}
+                  style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8" }}>
+                  {REPEAT_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                </select>
+              </div>
+            ))}
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <input type="number" inputMode="decimal" value={b.value} placeholder="0"
-              onChange={(e) => onChangeField(b.id, "value", e.target.value)}
-              style={{ ...inputNumberStyle, width: "auto", flex: 1 }} />
-            <input type="date" value={b.dueDate || ""}
-              onChange={(e) => onChangeField(b.id, "dueDate", e.target.value)}
-              style={dateInputStyle} />
-          </div>
-          <select value={Number(b.repeatMonths) || 0} onChange={(e) => handleRepeatChange(b, Number(e.target.value))}
-            style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "6px 8px", color: "#202B29", background: "#FFFDF8" }}>
-            {REPEAT_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-          </select>
         </div>
       ))}
       <button onClick={onAdd} style={{ ...addBtnStyle, width: "100%", textAlign: "center", borderStyle: "solid", borderColor: "#AD8A2E", color: "#AD8A2E" }}>+ เพิ่มรายการ</button>
@@ -747,7 +785,15 @@ function StatCard({ label, value, sub, color }) {
   );
 }
 
-function SectionTitle({ eyebrow, title }) {
+function SectionTitle({ eyebrow, title, captionBelow }) {
+  if (captionBelow) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 18, color: "#202B29" }}>{title}</div>
+        <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459", marginTop: 2 }}>{captionBelow}</div>
+      </div>
+    );
+  }
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, letterSpacing: "0.08em", color: "#AD8A2E", fontWeight: 600, textTransform: "uppercase" }}>{eyebrow}</div>
@@ -881,8 +927,8 @@ function Dashboard() {
   const totalExpense = fixedTotal + variableTotal;
   const netCashflow = INCOME.total - totalExpense;
   const expenseSplit = [
-    { key: "fixed", label: "รายจ่ายคงที่ (วันที่ 1)", value: fixedTotal, color: "#8A5A2B" },
-    { key: "variable", label: "รายจ่ายผันแปรรายวัน", value: variableTotal, color: "#D9AF78" },
+    { key: "fixed", label: "รายจ่ายคงที่", value: fixedTotal, color: "#8A5A2B" },
+    { key: "variable", label: "รายจ่ายผันแปร", value: variableTotal, color: "#D9AF78" },
   ];
 
   // Checklist always reflects the saved (non-draft) item set.
@@ -1051,7 +1097,7 @@ function Dashboard() {
         </div>
 
         <div style={{ marginBottom: 24 }}>
-          <SectionTitle eyebrow="ย้อนหลังสูงสุด 12 เดือน" title="เปรียบเทียบข้อมูลรายเดือน" />
+          <SectionTitle title="เปรียบเทียบข้อมูลรายเดือน" captionBelow="ย้อนหลังสูงสุด 12 เดือน" />
           <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16 }}>
             <MonthlyTrendChart history={historyList} currentKey={MONTH_KEY} />
           </div>
@@ -1163,7 +1209,7 @@ function Dashboard() {
           <div style={pairGridStyle}>
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
-                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายคงที่ · หักอัตโนมัติวันที่ 1 ทุกเดือน</span>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายคงที่</span>
                 <EditToggle editing={editingFixed} onStart={startEditFixed} onSave={saveEditFixed} onCancel={cancelEditFixed} startLabel="แก้ไขรายการ" />
               </div>
               {editingFixed ? (
@@ -1178,7 +1224,7 @@ function Dashboard() {
 
             <div style={{ marginTop: isDesktop ? 0 : 20 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
-                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายผันแปร · ตามรายวัน (แตะหมวดเพื่อดูรายละเอียด)</span>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายผันแปร</span>
                 <EditToggle editing={editingVariable} onStart={startEditVariable} onSave={saveEditVariable} onCancel={cancelEditVariable} startLabel="แก้ไขรายการ" />
               </div>
               {editingVariable ? (
@@ -1193,7 +1239,7 @@ function Dashboard() {
           </div>
         </div>
 
-        <div style={{ marginBottom: 24 }}>
+        <div style={{ marginTop: 32, marginBottom: 24, paddingTop: 24, borderTop: "1px solid #E6E0D2" }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
             <SectionTitle eyebrow="รายจ่ายประจำปี / ตามรอบ" title={`รวม ${fmt(annualTotal)}`} />
             <EditToggle editing={editingAnnual} onStart={startEditAnnual} onSave={saveEditAnnual} onCancel={cancelEditAnnual} startLabel="แก้ไขรายการ" />
