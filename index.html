@@ -212,6 +212,7 @@ const REPEAT_OPTIONS = [
 // (all the annual ones together, all the quarterly ones together, etc.)
 // instead of one flat mixed list.
 const ANNUAL_GROUP_ORDER = [12, 6, 3, 1, 0];
+const CADENCE_COLORS = { 12: "#8A5A2B", 6: "#B07E45", 3: "#C99A57", 1: "#D9AF78", 0: "#E6C596" };
 function groupBillsByCadence(bills) {
   return ANNUAL_GROUP_ORDER
     .map((months) => ({
@@ -648,8 +649,10 @@ function GroupEditor({ groups, onChangeValue, onChangeName, onAddItem, onRemoveI
   );
 }
 
-// Highlighted alert listing annual bills due within REMINDER_WINDOW_DAYS (or
-// already overdue). Renders nothing if there's nothing to warn about.
+// Highlighted alert listing items due within 1 day. Monthly items keep
+// showing (even once overdue) until ticked off; annual/recurring bills stop
+// showing once their due date has passed. Renders nothing if there's
+// nothing to warn about.
 function UpcomingBillsBanner({ bills }) {
   if (!bills.length) return null;
   return (
@@ -674,40 +677,62 @@ function UpcomingBillsBanner({ bills }) {
 
 // Read-only list of annual bills, soonest next occurrence first.
 function AnnualBillsList({ bills }) {
+  const [open, setOpen] = useState(null);
   const withNext = bills.map((b) => {
     const next = nextOccurrence(b.dueDate, b.repeatMonths);
     return { ...b, next, days: daysUntilDate(next) };
   });
-  const groups = groupBillsByCadence(withNext);
+  const groups = groupBillsByCadence(withNext).map((g) => ({
+    ...g,
+    value: g.items.reduce((s, b) => s + (Number(b.value) || 0), 0),
+    color: CADENCE_COLORS[g.months] || "#8A5A2B",
+  }));
+  const grandTotal = groups.reduce((s, g) => s + g.value, 0);
+
   return (
     <div style={{ marginTop: 14 }}>
       {groups.length === 0 && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#A79E8E" }}>ไม่มีรายการ</div>}
-      {groups.map((g, gi) => {
+      {groups.map((g) => {
         const sorted = [...g.items].sort((a, b) => {
           if (!a.next) return 1;
           if (!b.next) return -1;
           return a.next - b.next;
         });
         return (
-          <div key={g.months} style={{ marginBottom: gi < groups.length - 1 ? 18 : 0 }}>
-            <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, fontWeight: 600, color: "#AD8A2E", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>{g.label}</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {sorted.map((b) => {
-                const overdue = b.days !== null && b.days < 0;
-                const soon = b.days !== null && b.days >= 0 && b.days <= REMINDER_WINDOW_DAYS;
-                return (
-                  <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, borderBottom: "1px solid #E6E0D2", paddingBottom: 10 }}>
-                    <div style={{ flex: 1, minWidth: 0, color: "#202B29" }}>{b.name}</div>
-                    <div style={{ flex: 1, textAlign: "center", fontSize: 11.5, color: overdue ? "#7A2E1F" : soon ? "#AD8A2E" : "#A79E8E" }}>
-                      กำหนด {formatDate(b.next)}
-                      {overdue && " · เลยกำหนดแล้ว"}
-                      {soon && !overdue && ` · อีก ${b.days} วัน`}
+          <div key={g.months} style={{ borderBottom: "1px solid #E6E0D2" }}>
+            <button
+              onClick={() => setOpen(open === g.months ? null : g.months)}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 2px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 3, background: g.color, flexShrink: 0 }} />
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 14, color: "#202B29" }}>{g.label}</span>
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#6B6459" }}>{pct(g.value, grandTotal)}</span>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 14, color: "#202B29" }}>{fmt(g.value)}</span>
+                <span style={{ fontSize: 12, color: "#6B6459", transform: open === g.months ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▾</span>
+              </span>
+            </button>
+            {open === g.months && (
+              <div style={{ padding: "0 2px 12px 22px", display: "flex", flexDirection: "column", gap: 10 }}>
+                {sorted.map((b) => {
+                  const overdue = b.days !== null && b.days < 0;
+                  const soon = b.days !== null && b.days >= 0 && b.days <= REMINDER_WINDOW_DAYS;
+                  return (
+                    <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13 }}>
+                      <div style={{ flex: 1, minWidth: 0, color: "#202B29" }}>{b.name}</div>
+                      <div style={{ flex: 1, textAlign: "center", fontSize: 11.5, color: overdue ? "#7A2E1F" : soon ? "#AD8A2E" : "#A79E8E" }}>
+                        กำหนด {formatDate(b.next)}
+                        {overdue && " · เลยกำหนดแล้ว"}
+                        {soon && !overdue && ` · อีก ${b.days} วัน`}
+                      </div>
+                      <span style={{ fontWeight: 700, color: "#202B29", flexShrink: 0, textAlign: "right", minWidth: 80 }}>{fmt(b.value)}</span>
                     </div>
-                    <span style={{ fontWeight: 700, color: "#202B29", flexShrink: 0, textAlign: "right", minWidth: 80 }}>{fmt(b.value)}</span>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         );
       })}
@@ -728,12 +753,22 @@ function AnnualBillsEditor({ bills, onChangeField, onAdd, onRemove }) {
       onChangeField(b.id, "dueDate", `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}-01`);
     }
   };
-  const groups = groupBillsByCadence(bills);
+  const groups = groupBillsByCadence(bills).map((g) => ({
+    ...g,
+    value: g.items.reduce((s, b) => s + parseNum(b.value, 0), 0),
+    color: CADENCE_COLORS[g.months] || "#8A5A2B",
+  }));
   return (
     <div style={{ marginTop: 14 }}>
-      {groups.map((g, gi) => (
-        <div key={g.months} style={{ marginBottom: 14 }}>
-          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, fontWeight: 600, color: "#AD8A2E", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>{g.label}</div>
+      {groups.map((g) => (
+        <div key={g.months} style={{ border: "1px solid #E6E0D2", borderRadius: 12, padding: 12, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 3, background: g.color, flexShrink: 0 }} />
+              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 14, color: "#202B29" }}>{g.label}</span>
+            </span>
+            <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, fontWeight: 700, color: "#202B29" }}>{fmt(g.value)}</span>
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {g.items.map((b) => (
               <div key={b.id} style={{ border: "1px solid #E6E0D2", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -951,21 +986,25 @@ function Dashboard() {
 
   // Annual bills: kept separate from totalExpense/netCashflow on purpose (a
   // once-a-year bill would badly distort a single month's numbers). Just
-  // tracked here for reminders.
+  // tracked here for reminders. Reminder window: starts 1 day before the due
+  // date and stops as soon as the due date has passed (it isn't tied to any
+  // "paid" checkbox — these don't have one).
   const annualBills = allData.annualBills || DEFAULT_ANNUAL_BILLS;
   const annualTotal = annualBills.reduce((s, b) => s + (Number(b.value) || 0), 0);
   const annualUpcoming = annualBills
     .map((b) => ({ ...b, days: daysUntilDate(nextOccurrence(b.dueDate, b.repeatMonths)) }))
-    .filter((b) => b.days !== null && b.days <= REMINDER_WINDOW_DAYS);
+    .filter((b) => b.days !== null && b.days >= 0 && b.days <= 1);
 
   // Monthly fixed/variable items that have a due-day-of-month set — merged
   // with the annual bills above into one combined reminder feed, always
-  // sorted soonest-first regardless of whether it's monthly, every 3/6
-  // months, or yearly.
+  // sorted soonest-first. Reminder window: starts 1 day before the due day,
+  // and — unlike annual bills — keeps reminding (even once overdue) for as
+  // long as the item is still unticked this month; it disappears the moment
+  // it's ticked off, regardless of date.
   const monthlyUpcoming = checklistItems
-    .filter((it) => it.dueDay)
+    .filter((it) => it.dueDay && !paid[it.id])
     .map((it) => ({ ...it, days: daysUntilDate(nextMonthlyDate(it.dueDay)) }))
-    .filter((it) => it.days !== null && it.days <= REMINDER_WINDOW_DAYS);
+    .filter((it) => it.days !== null && it.days <= 1);
 
   const upcomingBills = [...annualUpcoming, ...monthlyUpcoming].sort((a, b) => a.days - b.days);
 
@@ -1249,11 +1288,11 @@ function Dashboard() {
           ) : (
             <AnnualBillsList bills={annualBills} />
           )}
-          {editingAnnual && <div style={hintStyle}>แก้ไขชื่อ ยอดเงิน วันครบกำหนด และรอบการจ่ายซ้ำได้ แล้วกด "บันทึก" — ระบบจะแจ้งเตือนอัตโนมัติล่วงหน้า {REMINDER_WINDOW_DAYS} วันก่อนถึงกำหนด (ไม่รวมในยอดรายจ่ายรายเดือนด้านบน เพื่อไม่ให้ตัวเลขเดือนใดเดือนหนึ่งเพี้ยน)</div>}
+          {editingAnnual && <div style={hintStyle}>แก้ไขชื่อ ยอดเงิน วันครบกำหนด และรอบการจ่ายซ้ำได้ แล้วกด "บันทึก" — ระบบจะแจ้งเตือนอัตโนมัติล่วงหน้า 1 วันก่อนถึงกำหนด และจะหยุดแจ้งเมื่อเลยวันครบกำหนดไปแล้ว (ไม่รวมในยอดรายจ่ายรายเดือนด้านบน เพื่อไม่ให้ตัวเลขเดือนใดเดือนหนึ่งเพี้ยน)</div>}
         </div>
 
         <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน รายจ่าย หรือรายจ่ายประจำปี เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ ในหมวดสินทรัพย์และหนี้สิน มีไอคอน ⠿ ให้ลาก (drag) จัดเรียงลำดับรายการเองได้ด้วย ในหมวดรายจ่ายคงที่/ผันแปร ใส่วันที่ครบกำหนดของทุกเดือน (1-31) ได้ต่อรายการ รายการที่มีวันที่จะเรียงขึ้นก่อนตามความใกล้ถึงกำหนด แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) แบนเนอร์แจ้งเตือนด้านบนสุดของหน้ารวมทั้งรายจ่ายรายเดือนที่ตั้งวันที่ไว้และรายจ่ายประจำปี/ตามรอบ เรียงตามวันครบกำหนดที่ใกล้ที่สุดก่อนเสมอ (ล่วงหน้า {REMINDER_WINDOW_DAYS} วัน) โดยรายจ่ายประจำปี/ตามรอบไม่ถูกรวมเข้าไปในยอดรายจ่ายรายเดือน สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
+          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน รายจ่าย หรือรายจ่ายประจำปี เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ ในหมวดสินทรัพย์และหนี้สิน มีไอคอน ⠿ ให้ลาก (drag) จัดเรียงลำดับรายการเองได้ด้วย ในหมวดรายจ่ายคงที่/ผันแปร ใส่วันที่ครบกำหนดของทุกเดือน (1-31) ได้ต่อรายการ รายการที่มีวันที่จะเรียงขึ้นก่อนตามความใกล้ถึงกำหนด แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) แบนเนอร์แจ้งเตือนด้านบนสุดของหน้าจะขึ้นล่วงหน้า 1 วันก่อนถึงกำหนดเสมอ — รายจ่ายรายเดือนที่ยังไม่ติ๊กจะแจ้งต่อเนื่องจนกว่าจะติ๊กว่าจ่ายแล้ว (ติ๊กแล้วหายทันที) ส่วนรายจ่ายประจำปี/ตามรอบจะแจ้งจนกว่าจะเลยวันครบกำหนดแล้วหยุดเอง (ไม่ถูกรวมเข้าไปในยอดรายจ่ายรายเดือน) สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
         </div>
       </div>
     </div>
