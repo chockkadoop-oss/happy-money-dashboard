@@ -15,6 +15,7 @@ body { background: #F6F3EC; }
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script type="text/babel" data-presets="react">
 const { useState, useEffect } = React;
 const fmt = (n) => "฿" + Math.round(n || 0).toLocaleString("th-TH");
@@ -92,6 +93,104 @@ const CHECKLIST_ITEMS = [
 ...VARIABLE_EXPENSE_GROUPS.flatMap((g) => g.items.map(([name, val], i) => ({ key: `${g.key}-${i}`, name, val }))),
 ];
 
+// ---------- TAX PREP DATA (separate feature, own section of the store) ----------
+const TAX_MONTHS = [
+{ key: "01", label: "ม.ค." }, { key: "02", label: "ก.พ." }, { key: "03", label: "มี.ค." },
+{ key: "04", label: "เม.ย." }, { key: "05", label: "พ.ค." }, { key: "06", label: "มิ.ย." },
+{ key: "07", label: "ก.ค." }, { key: "08", label: "ส.ค." }, { key: "09", label: "ก.ย." },
+{ key: "10", label: "ต.ค." }, { key: "11", label: "พ.ย." }, { key: "12", label: "ธ.ค." },
+];
+
+const TAX_FIELD_DEFS = [
+{ key: "salary", label: "ค่าจ้าง (รวมเงินได้)", unit: "บาท/เดือน", ocr: true, keywords: ["รวมเงินได้"] },
+{ key: "baseSalary", label: "ฐานเงินเดือน", unit: "บาท/เดือน", ocr: true, keywords: ["ฐานเงินเดือน"] },
+{ key: "fixedBonus", label: "โบนัสคงที่", unit: "บาท/เดือน", ocr: true, keywords: ["โบนัสคงที่", "fixed bonus"] },
+{ key: "wht", label: "ภาษีหัก ณ ที่จ่าย", unit: "บาท/เดือน", ocr: true, keywords: ["ภาษีหัก ณ ที่จ่าย", "ภาษีหัก"] },
+{ key: "sso", label: "ประกันสังคม (SSO)", unit: "บาท/เดือน", ocr: true, keywords: ["กองทุนประกันสังคม"] },
+{ key: "pvd", label: "กองทุนสำรองเลี้ยงชีพ (PVD)", unit: "บาท/เดือน", ocr: true, keywords: ["เงินสะสมกองทุนสำรองเลี้ยงชีพ"] },
+{ key: "houseInterest", label: "ดอกเบี้ยเงินกู้ที่อยู่อาศัย", unit: "บาท/เดือน", ocr: false, keywords: [] },
+];
+const OCR_FIELD_DEFS = TAX_FIELD_DEFS.filter((f) => f.ocr);
+
+const INSURANCE_TYPES = [
+{ key: "lifeInsurance", label: "เบี้ยประกันชีวิต", keywords: ["ประกันชีวิต", "life insurance", "เบี้ยประกัน"] },
+{ key: "healthInsurance", label: "เบี้ยประกันสุขภาพ", keywords: ["ประกันสุขภาพ", "health insurance", "ประกันโรคร้าย", "เบี้ยประกัน"] },
+];
+
+const emptyTaxMonth = () => ({
+salary: 0, baseSalary: 0, fixedBonus: 0, wht: 0, sso: 0, pvd: 0, houseInterest: 0,
+lifeInsurance: [], healthInsurance: [],
+});
+
+const DEFAULT_TAX_YEAR = "2569";
+const TAX_YEAR_OPTIONS = ["2567", "2568", "2569", "2570"];
+
+// General reference figures only (Thai personal income tax deductions) — not
+// personalized advice. Always double-check current rules with the Revenue
+// Department or a tax professional before filing.
+const DEDUCTION_CAPS = {
+sso: 9000,
+lifeAndHealthCombined: 100000,
+health: 25000,
+houseInterest: 100000,
+};
+
+// The photo itself is only handed to Tesseract for on-device OCR and is
+// never saved to state, localStorage, or the Google Drive sync payload —
+// only the numbers the person confirms get kept. Nothing else touches the
+// image, and it's discarded (garbage-collected) right after recognition.
+async function ocrImage(file) {
+if (!window.Tesseract) throw new Error("ocr-unavailable");
+const result = await window.Tesseract.recognize(file, "eng+tha");
+return (result && result.data && result.data.text) || "";
+}
+
+function extractNumberCandidates(text, keywords) {
+const lines = text.split(/\n+/);
+const numRe = /(?<!\d)\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?(?!\d)/g;
+const seen = new Set();
+const candidates = [];
+lines.forEach((line) => {
+const matches = line.match(numRe);
+if (!matches) return;
+const lower = line.toLowerCase();
+const isKeywordLine = keywords.some((k) => lower.includes(k.toLowerCase()));
+matches.forEach((m) => {
+const val = parseFloat(m.replace(/,/g, ""));
+if (!val || val < 10) return;
+const dupKey = val.toFixed(2);
+if (seen.has(dupKey)) return;
+seen.add(dupKey);
+candidates.push({ value: val, guess: isKeywordLine });
+});
+});
+candidates.sort((a, b) => (b.guess === a.guess ? 0 : b.guess ? 1 : -1));
+return candidates.slice(0, 8);
+}
+
+// Read the amount that appears right AFTER a keyword on its line. Taking the
+// first number after the label (not the last on the line) keeps the correct
+// value even when OCR merges the payslip's two columns into one line, and it
+// avoids dropping a value shared by two rows (e.g. base salary == fixed bonus).
+function readFieldFromText(text, keywords) {
+const lines = text.split(/\n+/);
+const numRe = /(?<!\d)\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?(?!\d)/g;
+for (const line of lines) {
+const lower = line.toLowerCase();
+let after = -1;
+for (const k of keywords) {
+const idx = lower.indexOf(k.toLowerCase());
+if (idx !== -1) { after = idx + k.length; break; }
+}
+if (after === -1) continue;
+const rest = line.slice(after).match(numRe);
+if (!rest) continue;
+const nums = rest.map((m) => parseFloat(m.replace(/,/g, ""))).filter((v) => v >= 1);
+if (nums.length) return nums[0];
+}
+return null;
+}
+
 // ---------- small building blocks ----------
 function CompositionBar({ groups, total }) {
 return (
@@ -166,6 +265,419 @@ return (
 <div style={{ marginBottom: 12 }}>
 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, letterSpacing: "0.08em", color: accent || "#AD8A2E", fontWeight: 600, textTransform: "uppercase" }}>{eyebrow}</div>
 <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 18, color: "#202B29", marginTop: 2 }}>{title}</div>
+</div>
+);
+}
+
+// ---------- Tax Prep building blocks ----------
+function NumberField({ label, unit, value, onChange }) {
+return (
+<div style={{ marginBottom: 14 }}>
+<div style={{ marginBottom: 5 }}>
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#202B29" }}>{label}</div>
+{unit && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#A79E8E" }}>{unit}</div>}
+</div>
+<input
+type="number"
+value={value || ""}
+onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+placeholder="0"
+style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 14, color: "#202B29", background: "#FBFAF6" }}
+/>
+</div>
+);
+}
+
+function InsuranceRow({ item, onUpdate, onRemove }) {
+return (
+<div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10, background: "#FBFAF6", border: "1px solid #E6E0D2", borderRadius: 10, padding: 10 }}>
+<div style={{ flex: 1, minWidth: 0 }}>
+<input
+type="text"
+placeholder="ชื่อกรมธรรม์ / บริษัทประกัน"
+value={item.name}
+onChange={(e) => onUpdate({ name: e.target.value })}
+style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#202B29", background: "#FFFFFF", marginBottom: 6 }}
+/>
+<input
+type="number"
+placeholder="เบี้ยประกัน/ปี"
+value={item.premium || ""}
+onChange={(e) => onUpdate({ premium: parseFloat(e.target.value) || 0 })}
+style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#202B29", background: "#FFFFFF" }}
+/>
+</div>
+<button onClick={onRemove} title="ลบกรมธรรม์นี้" style={{ background: "none", border: "none", color: "#A79E8E", fontSize: 16, cursor: "pointer", padding: "4px 6px", flexShrink: 0 }}>✕</button>
+</div>
+);
+}
+
+function InsuranceList({ title, items, onChange, keywords }) {
+const [ocrBusy, setOcrBusy] = useState(false);
+const [ocrError, setOcrError] = useState(false);
+
+const addItem = (prefill) => {
+onChange([...items, { id: `${Date.now()}-${Math.random()}`, name: "", premium: 0, ...(prefill || {}) }]);
+};
+const updateItem = (id, patch) => {
+onChange(items.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+};
+const removeItem = (id) => {
+onChange(items.filter((it) => it.id !== id));
+};
+const total = items.reduce((s, it) => s + (Number(it.premium) || 0), 0);
+
+const handleAddByPhoto = async (e) => {
+const file = e.target.files && e.target.files[0];
+e.target.value = "";
+if (!file) return;
+setOcrError(false);
+setOcrBusy(true);
+try {
+const text = await ocrImage(file);
+const found = extractNumberCandidates(text, keywords);
+const best = found.find((c) => c.guess) || found[0];
+if (best) {
+addItem({ premium: best.value });
+} else {
+addItem({});
+setOcrError(true);
+}
+} catch (err) {
+addItem({});
+setOcrError(true);
+} finally {
+setOcrBusy(false);
+}
+};
+
+return (
+<div style={{ marginBottom: 16 }}>
+<div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+<span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#202B29" }}>{title}</span>
+<span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 700, color: "#202B29" }}>{fmt(total)}</span>
+</div>
+{items.length === 0 && (
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#8C8577", marginBottom: 8 }}>
+ยังไม่มีกรมธรรม์ · เพิ่มด้วยปุ่มด้านล่าง
+</div>
+)}
+{items.map((it) => (
+<InsuranceRow key={it.id} item={it} onUpdate={(patch) => updateItem(it.id, patch)} onRemove={() => removeItem(it.id)} />
+))}
+<div style={{ display: "flex", gap: 8 }}>
+<button
+onClick={() => addItem()}
+style={{ flex: 1, padding: "9px 10px", borderRadius: 10, border: "1.5px dashed #C9C2B2", background: "transparent", color: "#6B6459", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+>
++ เพิ่มกรมธรรม์ (กรอกเอง)
+</button>
+<label
+title="อ่านค่าในเครื่องเท่านั้น ไม่เก็บ/ไม่อัปโหลดรูป"
+style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "9px 10px", borderRadius: 10, border: "1.5px dashed #2B4C6F", background: "#EAF0F6", color: "#2B4C6F", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, cursor: "pointer", textAlign: "center" }}
+>
+{ocrBusy ? "กำลังอ่าน..." : "📷 แนบรูปกรมธรรม์"}
+<input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleAddByPhoto} />
+</label>
+</div>
+{ocrError && (
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#7A2E1F", marginTop: 6 }}>
+เพิ่มรายการให้แล้วแต่อ่านเบี้ยประกันจากภาพไม่สำเร็จ กรอกยอดเองในรายการที่เพิ่งเพิ่มได้เลย
+</div>
+)}
+</div>
+);
+}
+
+function PayslipUpload({ currentValues, onApply }) {
+const [ocrBusy, setOcrBusy] = useState(false);
+const [ocrError, setOcrError] = useState(false);
+const [review, setReview] = useState(null); // { values: {...}, detected: Set(keys) }
+
+const handleFile = async (e) => {
+const file = e.target.files && e.target.files[0];
+e.target.value = "";
+if (!file) return;
+setOcrError(false);
+setOcrBusy(true);
+setReview(null);
+try {
+const text = await ocrImage(file);
+const values = {};
+const detected = new Set();
+OCR_FIELD_DEFS.forEach((f) => {
+const val = readFieldFromText(text, f.keywords);
+if (val !== null) {
+values[f.key] = val;
+detected.add(f.key);
+} else {
+values[f.key] = currentValues[f.key] || 0;
+}
+});
+if (detected.size === 0) setOcrError(true);
+else setReview({ values, detected });
+} catch (err) {
+setOcrError(true);
+} finally {
+setOcrBusy(false);
+}
+};
+
+if (review) {
+return (
+<div style={{ background: "#EAF0F6", border: "1px solid #B9CBDD", borderRadius: 12, padding: 14, marginBottom: 16 }}>
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 12.5, color: "#2B4C6F", marginBottom: 2 }}>
+ตรวจสอบค่าที่อ่านได้จากภาพ
+</div>
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#5B7594", marginBottom: 10 }}>
+พบ {review.detected.size} ค่าในภาพนี้ · แก้ไขตัวเลขได้ก่อนบันทึก
+</div>
+{OCR_FIELD_DEFS.map((f) => (
+<div key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+<span style={{ flex: 1, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#202B29" }}>
+{review.detected.has(f.key) ? "✓ " : ""}{f.label}
+</span>
+<input
+type="number"
+value={review.values[f.key] || ""}
+onChange={(e) => setReview({ ...review, values: { ...review.values, [f.key]: parseFloat(e.target.value) || 0 } })}
+style={{ width: 120, padding: "6px 8px", borderRadius: 8, border: review.detected.has(f.key) ? "1px solid #2F5D46" : "1px solid #B9CBDD", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, textAlign: "right", background: "#FFFFFF" }}
+/>
+</div>
+))}
+<div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+<button
+onClick={() => { onApply(review.values); setReview(null); }}
+style={{ flex: 1, padding: "9px 12px", borderRadius: 10, border: "none", background: "#2B4C6F", color: "#FFFFFF", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 12.5, cursor: "pointer" }}
+>
+บันทึกค่านี้ลงฟอร์ม
+</button>
+<button
+onClick={() => setReview(null)}
+style={{ padding: "9px 14px", borderRadius: 10, border: "1px solid #B9CBDD", background: "#FFFFFF", color: "#6B6459", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 12.5, cursor: "pointer" }}
+>
+ยกเลิก
+</button>
+</div>
+</div>
+);
+}
+
+return (
+<div style={{ marginBottom: 16 }}>
+<label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "13px", borderRadius: 12, border: "1.5px dashed #2B4C6F", background: "#EAF0F6", color: "#2B4C6F", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 12.5, cursor: "pointer", textAlign: "center" }}>
+{ocrBusy ? "กำลังอ่านภาพ (ครั้งแรกอาจใช้เวลาสักครู่)..." : "📷 แนบสลิปเงินเดือน/เอกสาร — อ่านได้หลายค่าในรูปเดียว"}
+<input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleFile} />
+</label>
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#8C8577", marginTop: 5, textAlign: "center" }}>
+รูปใช้อ่านค่าในเครื่องคุณเท่านั้น ไม่เก็บและไม่อัปโหลดรูปไว้ที่ไหน — เก็บแค่ตัวเลขที่คุณกดยืนยัน
+</div>
+{ocrError && (
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#7A2E1F", marginTop: 6, textAlign: "center" }}>
+อ่านภาพไม่สำเร็จ หรือไม่พบค่าที่เกี่ยวข้องในภาพนี้ ลองภาพที่ชัดขึ้น หรือกรอกเองด้านล่าง
+</div>
+)}
+</div>
+);
+}
+
+const thStyle = { textAlign: "right", padding: "8px 6px", color: "#6B6459", fontWeight: 600, whiteSpace: "nowrap", borderBottom: "1px solid #E6E0D2" };
+const tdStyle = { textAlign: "right", padding: "7px 6px", whiteSpace: "nowrap", borderBottom: "1px solid #F0EBDD" };
+
+function TaxPrep({ allData, loaded, syncError, persist }) {
+const [year, setYear] = useState(DEFAULT_TAX_YEAR);
+const [monthKey, setMonthKey] = useState(TAX_MONTHS[Math.min(new Date().getMonth(), 11)].key);
+
+const taxRoot = allData.taxPrep || {};
+const yearData = taxRoot[year] || { months: {} };
+const monthData = { ...emptyTaxMonth(), ...(yearData.months[monthKey] || {}) };
+
+const updateMonth = (patch) => {
+const nextMonth = { ...monthData, ...patch };
+const nextYearData = { ...yearData, months: { ...yearData.months, [monthKey]: nextMonth } };
+const nextTaxRoot = { ...taxRoot, [year]: nextYearData };
+persist({ ...allData, taxPrep: nextTaxRoot });
+};
+
+const monthsFilled = TAX_MONTHS.map((m) => ({ ...m, data: { ...emptyTaxMonth(), ...(yearData.months[m.key] || {}) } }));
+const insTotal = (list) => (list || []).reduce((s, it) => s + (Number(it.premium) || 0), 0);
+const sumField = (key) => monthsFilled.reduce((s, m) => s + (Number(m.data[key]) || 0), 0);
+const totals = {
+salary: sumField("salary"),
+baseSalary: sumField("baseSalary"),
+fixedBonus: sumField("fixedBonus"),
+wht: sumField("wht"),
+sso: sumField("sso"),
+pvd: sumField("pvd"),
+houseInterest: sumField("houseInterest"),
+lifeInsurance: monthsFilled.reduce((s, m) => s + insTotal(m.data.lifeInsurance), 0),
+healthInsurance: monthsFilled.reduce((s, m) => s + insTotal(m.data.healthInsurance), 0),
+};
+
+if (!loaded) {
+return (
+<div style={{ padding: 40, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", color: "#6B6459" }}>
+กำลังโหลดข้อมูล...
+</div>
+);
+}
+
+return (
+<div style={{ padding: "20px 16px 60px", display: "flex", justifyContent: "center" }}>
+<div style={{ width: "100%", maxWidth: 480 }}>
+<SectionTitle eyebrow="เตรียมยื่นภาษี" title={`ข้อมูลภาษีปี ${year}`} accent="#2B4C6F" />
+
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, marginBottom: 14, color: syncError ? "#7A2E1F" : DRIVE_CONFIGURED ? "#2F5D46" : "#AD8A2E" }}>
+{syncError
+? "⚠️ ซิงก์ Google Drive ไม่สำเร็จ — ใช้ข้อมูลล่าสุดที่มีอยู่ไปก่อน"
+: DRIVE_CONFIGURED
+? "☁️ ซิงก์กับ Google Drive เดียวกับหน้าภาพรวมการเงิน"
+: "ยังไม่ได้ตั้งค่า Google Drive — ข้อมูลเก็บไว้ในเบราว์เซอร์นี้ก่อน"}
+</div>
+
+<div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+{TAX_YEAR_OPTIONS.map((y) => (
+<button
+key={y}
+onClick={() => setYear(y)}
+style={{ padding: "6px 14px", borderRadius: 999, fontSize: 12.5, border: y === year ? "1.5px solid #2B4C6F" : "1px solid #E6E0D2", background: y === year ? "#2B4C6F" : "#FFFFFF", color: y === year ? "#FFFFFF" : "#6B6459", cursor: "pointer", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600 }}
+>
+ปีภาษี {y}
+</button>
+))}
+</div>
+
+<div style={{ display: "flex", gap: 6, marginBottom: 16, overflowX: "auto", paddingBottom: 4 }}>
+{TAX_MONTHS.map((m) => {
+const d = yearData.months[m.key];
+const has = d && (d.salary || d.wht || d.sso || d.pvd || d.houseInterest || (d.lifeInsurance || []).length || (d.healthInsurance || []).length);
+return (
+<button
+key={m.key}
+onClick={() => setMonthKey(m.key)}
+style={{ flexShrink: 0, position: "relative", padding: "7px 12px", borderRadius: 10, fontSize: 12.5, border: m.key === monthKey ? "1.5px solid #2B4C6F" : "1px solid #E6E0D2", background: m.key === monthKey ? "#EAF0F6" : "#FFFFFF", color: "#202B29", cursor: "pointer", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: m.key === monthKey ? 700 : 500 }}
+>
+{m.label}
+{has ? <span style={{ position: "absolute", top: -3, right: -3, width: 7, height: 7, borderRadius: "50%", background: "#2F5D46" }} /> : null}
+</button>
+);
+})}
+</div>
+
+<div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 16, padding: 18, marginBottom: 20 }}>
+<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 14, color: "#202B29" }}>
+ข้อมูลเดือน {TAX_MONTHS.find((m) => m.key === monthKey).label} {year}
+</div>
+<button
+onClick={() => updateMonth(emptyTaxMonth())}
+style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, cursor: "pointer", padding: 0 }}
+>
+ล้างเดือนนี้
+</button>
+</div>
+
+<PayslipUpload currentValues={monthData} onApply={(values) => updateMonth(values)} />
+
+{TAX_FIELD_DEFS.map((f) => (
+<NumberField key={f.key} label={f.label} unit={f.unit} value={monthData[f.key]} onChange={(v) => updateMonth({ [f.key]: v })} />
+))}
+
+<div style={{ height: 1, background: "#E6E0D2", margin: "16px 0" }} />
+
+<InsuranceList title={INSURANCE_TYPES[0].label} items={monthData.lifeInsurance} onChange={(items) => updateMonth({ lifeInsurance: items })} keywords={INSURANCE_TYPES[0].keywords} />
+<InsuranceList title={INSURANCE_TYPES[1].label} items={monthData.healthInsurance} onChange={(items) => updateMonth({ healthInsurance: items })} keywords={INSURANCE_TYPES[1].keywords} />
+</div>
+
+<SectionTitle eyebrow="สรุปทั้งปี" title={`รวม 12 เดือน ปี ${year}`} accent="#2B4C6F" />
+<div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, overflow: "hidden", marginBottom: 16 }}>
+<div style={{ overflowX: "auto" }}>
+<table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5 }}>
+<thead>
+<tr style={{ background: "#F6F3EC" }}>
+<th style={{ ...thStyle, textAlign: "left" }}>เดือน</th>
+<th style={thStyle}>ค่าจ้าง</th>
+<th style={thStyle}>ฐานเงินเดือน</th>
+<th style={thStyle}>โบนัส</th>
+<th style={thStyle}>ภาษีหัก</th>
+<th style={thStyle}>SSO</th>
+<th style={thStyle}>PVD</th>
+<th style={thStyle}>ประกันชีวิต</th>
+<th style={thStyle}>ประกันสุขภาพ</th>
+<th style={thStyle}>ดอกเบี้ยบ้าน</th>
+</tr>
+</thead>
+<tbody>
+{monthsFilled.map((m) => (
+<tr key={m.key} onClick={() => setMonthKey(m.key)} style={{ cursor: "pointer", background: m.key === monthKey ? "#EAF0F6" : "transparent" }}>
+<td style={{ ...tdStyle, textAlign: "left", fontWeight: 600 }}>{m.label}</td>
+<td style={tdStyle}>{fmt(m.data.salary)}</td>
+<td style={tdStyle}>{fmt(m.data.baseSalary)}</td>
+<td style={tdStyle}>{fmt(m.data.fixedBonus)}</td>
+<td style={tdStyle}>{fmt(m.data.wht)}</td>
+<td style={tdStyle}>{fmt(m.data.sso)}</td>
+<td style={tdStyle}>{fmt(m.data.pvd)}</td>
+<td style={tdStyle}>{fmt(insTotal(m.data.lifeInsurance))}</td>
+<td style={tdStyle}>{fmt(insTotal(m.data.healthInsurance))}</td>
+<td style={tdStyle}>{fmt(m.data.houseInterest)}</td>
+</tr>
+))}
+</tbody>
+<tfoot>
+<tr style={{ background: "#FBF7EC" }}>
+<td style={{ ...tdStyle, textAlign: "left", fontWeight: 700 }}>รวม</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.salary)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.baseSalary)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.fixedBonus)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.wht)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.sso)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.pvd)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.lifeInsurance)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.healthInsurance)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.houseInterest)}</td>
+</tr>
+</tfoot>
+</table>
+</div>
+</div>
+
+<div style={{ background: "#FFFFFF", border: "1px dashed #C9C2B2", borderRadius: 14, padding: 16, marginBottom: 20 }}>
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 12.5, color: "#2B4C6F", marginBottom: 8 }}>
+เพดานลดหย่อนที่ควรรู้ (อ้างอิงทั่วไป)
+</div>
+<ul style={{ margin: 0, paddingLeft: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459", lineHeight: 1.8 }}>
+<li>ประกันสังคม: ลดหย่อนตามที่จ่ายจริง สูงสุด {fmt(DEDUCTION_CAPS.sso)} บาท/ปี</li>
+<li>ประกันชีวิต + ประกันสุขภาพ: รวมกันลดหย่อนได้สูงสุด {fmt(DEDUCTION_CAPS.lifeAndHealthCombined)} บาท/ปี (ในจำนวนนี้ส่วนประกันสุขภาพลดหย่อนได้ไม่เกิน {fmt(DEDUCTION_CAPS.health)} บาท)</li>
+<li>ดอกเบี้ยเงินกู้ที่อยู่อาศัย: ลดหย่อนตามที่จ่ายจริง สูงสุด {fmt(DEDUCTION_CAPS.houseInterest)} บาท/ปี</li>
+<li>กองทุนสำรองเลี้ยงชีพ (PVD): ลดหย่อนตามที่จ่ายจริง ไม่เกิน 15% ของค่าจ้าง และเมื่อรวมกับกองทุนเกษียณอื่น ๆ ไม่เกิน 500,000 บาท/ปี</li>
+</ul>
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#A79E8E", marginTop: 10 }}>
+ตัวเลขนี้เป็นข้อมูลอ้างอิงทั่วไป ไม่ใช่คำแนะนำทางภาษีเฉพาะบุคคล กรุณาตรวจสอบเงื่อนไขล่าสุดกับกรมสรรพากรหรือผู้เชี่ยวชาญด้านภาษีก่อนยื่นจริง
+</div>
+</div>
+
+<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
+แนบสลิปเงินเดือน 1 ใบที่ปุ่ม "📷 แนบสลิปเงินเดือน/เอกสาร" ด้านบน — ระบบจะอ่าน ค่าจ้าง (จากบรรทัด "รวมเงินได้") / ฐานเงินเดือน / โบนัสคงที่ / ภาษีหัก ณ ที่จ่าย / ประกันสังคม / กองทุนสำรองเลี้ยงชีพ (PVD) ให้พร้อมกันในครั้งเดียว แล้วให้ตรวจสอบตัวเลขก่อนบันทึก ส่วนดอกเบี้ยเงินกู้ที่อยู่อาศัยให้กรอกเอง สำหรับเบี้ยประกันแตะ "📷 แนบรูปกรมธรรม์" ในหมวดประกันชีวิต/สุขภาพ ระบบจะเพิ่มรายการใหม่และกรอกยอดเบี้ยประกันให้จากภาพทันที (ชื่อกรมธรรม์ยังต้องพิมพ์เองเพราะอ่านจากภาพไม่แม่นยำพอ) หรือกรอกเองได้ตลอดเวลาทุกช่อง ข้อมูลจะซิงก์ไปกับ Google Drive เดียวกับหน้าภาพรวมการเงิน
+</div>
+</div>
+</div>
+);
+}
+
+function TopNav({ view, setView }) {
+const navBtnStyle = (active, accent) => ({
+flex: 1, padding: "10px 12px", borderRadius: 12, fontFamily: "'IBM Plex Sans Thai', sans-serif",
+fontWeight: 600, fontSize: 13, cursor: "pointer",
+border: active ? `1.5px solid ${accent}` : "1px solid #E6E0D2",
+background: active ? accent : "#FFFFFF",
+color: active ? "#FFFFFF" : "#6B6459",
+});
+return (
+<div style={{ position: "sticky", top: 0, zIndex: 10, background: "#F6F3EC", borderBottom: "1px solid #E6E0D2", display: "flex", justifyContent: "center" }}>
+<div style={{ width: "100%", maxWidth: 480, display: "flex", gap: 8, padding: "14px 16px 10px" }}>
+<button onClick={() => setView("dashboard")} style={navBtnStyle(view === "dashboard", "#2F5D46")}>ภาพรวมการเงิน</button>
+<button onClick={() => setView("tax")} style={navBtnStyle(view === "tax", "#2B4C6F")}>เตรียมภาษี</button>
+</div>
 </div>
 );
 }
@@ -312,18 +824,8 @@ HAPPY MONEY · ข้อมูลล่าสุด 6 เม.ย. 2569
 );
 }
 
-function CrossLink() {
-return (
-<div style={{ position: "sticky", top: 0, zIndex: 10, background: "#F6F3EC", borderBottom: "1px solid #E6E0D2", display: "flex", justifyContent: "center" }}>
-<div style={{ width: "100%", maxWidth: 480, display: "flex", gap: 8, padding: "14px 16px 10px" }}>
-<span style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1.5px solid #2F5D46", background: "#2F5D46", color: "#FFFFFF" }}>ภาพรวมการเงิน</span>
-<a href="tax.html" style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459" }}>เตรียมภาษี</a>
-</div>
-</div>
-);
-}
-
 function App() {
+const [view, setView] = useState("dashboard");
 const [allData, setAllData] = useState({});
 const [loaded, setLoaded] = useState(false);
 const [syncError, setSyncError] = useState(false);
@@ -362,8 +864,12 @@ body: JSON.stringify(nextAllData),
 
 return (
 <div style={{ minHeight: "100vh", background: "#F6F3EC" }}>
-<CrossLink />
+<TopNav view={view} setView={setView} />
+{view === "dashboard" ? (
 <FinanceDashboard allData={allData} loaded={loaded} syncError={syncError} persist={persist} />
+) : (
+<TaxPrep allData={allData} loaded={loaded} syncError={syncError} persist={persist} />
+)}
 </div>
 );
 }
