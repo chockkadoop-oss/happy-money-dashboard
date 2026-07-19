@@ -102,12 +102,15 @@ const TAX_MONTHS = [
 ];
 
 const TAX_FIELD_DEFS = [
-{ key: "salary", label: "เงินเดือน / ค่าจ้าง", unit: "บาท/เดือน", keywords: ["เงินเดือน", "ค่าจ้าง", "salary", "gross"] },
-{ key: "wht", label: "ภาษีหัก ณ ที่จ่าย", unit: "บาท/เดือน", keywords: ["ภาษีหัก", "หัก ณ ที่จ่าย", "withholding", "ภ.ง.ด"] },
-{ key: "sso", label: "ประกันสังคม (SSO)", unit: "บาท/เดือน", keywords: ["ประกันสังคม", "sso", "มาตรา 33"] },
-{ key: "pvd", label: "กองทุนสำรองเลี้ยงชีพ (PVD)", unit: "บาท/เดือน", keywords: ["สำรองเลี้ยงชีพ", "provident", "pvd"] },
-{ key: "houseInterest", label: "ดอกเบี้ยเงินกู้ที่อยู่อาศัย", unit: "บาท/เดือน", keywords: ["ดอกเบี้ยเงินกู้", "ดอกเบี้ยที่อยู่อาศัย", "ดอกเบี้ยบ้าน", "ดอกเบี้ย"] },
+{ key: "salary", label: "ค่าจ้าง (รวมเงินได้)", unit: "บาท/เดือน", ocr: true, keywords: ["รวมเงินได้"] },
+{ key: "baseSalary", label: "ฐานเงินเดือน", unit: "บาท/เดือน", ocr: true, keywords: ["ฐานเงินเดือน"] },
+{ key: "fixedBonus", label: "โบนัสคงที่", unit: "บาท/เดือน", ocr: true, keywords: ["โบนัสคงที่", "fixed bonus"] },
+{ key: "wht", label: "ภาษีหัก ณ ที่จ่าย", unit: "บาท/เดือน", ocr: true, keywords: ["ภาษีหัก ณ ที่จ่าย", "ภาษีหัก"] },
+{ key: "sso", label: "ประกันสังคม (SSO)", unit: "บาท/เดือน", ocr: true, keywords: ["กองทุนประกันสังคม"] },
+{ key: "pvd", label: "กองทุนสำรองเลี้ยงชีพ (PVD)", unit: "บาท/เดือน", ocr: true, keywords: ["เงินสะสมกองทุนสำรองเลี้ยงชีพ"] },
+{ key: "houseInterest", label: "ดอกเบี้ยเงินกู้ที่อยู่อาศัย", unit: "บาท/เดือน", ocr: false, keywords: [] },
 ];
+const OCR_FIELD_DEFS = TAX_FIELD_DEFS.filter((f) => f.ocr);
 
 const INSURANCE_TYPES = [
 { key: "lifeInsurance", label: "เบี้ยประกันชีวิต", keywords: ["ประกันชีวิต", "life insurance", "เบี้ยประกัน"] },
@@ -115,7 +118,7 @@ const INSURANCE_TYPES = [
 ];
 
 const emptyTaxMonth = () => ({
-salary: 0, wht: 0, sso: 0, pvd: 0, houseInterest: 0,
+salary: 0, baseSalary: 0, fixedBonus: 0, wht: 0, sso: 0, pvd: 0, houseInterest: 0,
 lifeInsurance: [], healthInsurance: [],
 });
 
@@ -163,6 +166,29 @@ candidates.push({ value: val, guess: isKeywordLine });
 });
 candidates.sort((a, b) => (b.guess === a.guess ? 0 : b.guess ? 1 : -1));
 return candidates.slice(0, 8);
+}
+
+// Read the amount that appears right AFTER a keyword on its line. Taking the
+// first number after the label (not the last on the line) keeps the correct
+// value even when OCR merges the payslip's two columns into one line, and it
+// avoids dropping a value shared by two rows (e.g. base salary == fixed bonus).
+function readFieldFromText(text, keywords) {
+const lines = text.split(/\n+/);
+const numRe = /(?<!\d)\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?(?!\d)/g;
+for (const line of lines) {
+const lower = line.toLowerCase();
+let after = -1;
+for (const k of keywords) {
+const idx = lower.indexOf(k.toLowerCase());
+if (idx !== -1) { after = idx + k.length; break; }
+}
+if (after === -1) continue;
+const rest = line.slice(after).match(numRe);
+if (!rest) continue;
+const nums = rest.map((m) => parseFloat(m.replace(/,/g, ""))).filter((v) => v >= 1);
+if (nums.length) return nums[0];
+}
+return null;
 }
 
 // ---------- small building blocks ----------
@@ -244,42 +270,12 @@ return (
 }
 
 // ---------- Tax Prep building blocks ----------
-function OcrNumberField({ label, unit, value, onChange, keywords }) {
-const [ocrBusy, setOcrBusy] = useState(false);
-const [ocrError, setOcrError] = useState(false);
-const [candidates, setCandidates] = useState([]);
-
-const handleFile = async (e) => {
-const file = e.target.files && e.target.files[0];
-e.target.value = "";
-if (!file) return;
-setOcrError(false);
-setOcrBusy(true);
-setCandidates([]);
-try {
-const text = await ocrImage(file);
-const found = extractNumberCandidates(text, keywords);
-if (found.length === 0) setOcrError(true);
-else if (found.length === 1) onChange(found[0].value);
-else setCandidates(found);
-} catch (err) {
-setOcrError(true);
-} finally {
-setOcrBusy(false);
-}
-};
-
+function NumberField({ label, unit, value, onChange }) {
 return (
 <div style={{ marginBottom: 14 }}>
-<div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 5, gap: 8 }}>
-<div>
+<div style={{ marginBottom: 5 }}>
 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#202B29" }}>{label}</div>
 {unit && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#A79E8E" }}>{unit}</div>}
-</div>
-<label title="อ่านค่าในเครื่องเท่านั้น ไม่เก็บ/ไม่อัปโหลดรูป" style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#2B4C6F", cursor: "pointer", whiteSpace: "nowrap" }}>
-{ocrBusy ? "กำลังอ่านภาพ..." : "📷 อ่านจากภาพ"}
-<input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleFile} />
-</label>
 </div>
 <input
 type="number"
@@ -288,53 +284,11 @@ onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
 placeholder="0"
 style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 14, color: "#202B29", background: "#FBFAF6" }}
 />
-{ocrError && (
-<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#7A2E1F", marginTop: 5 }}>
-อ่านภาพไม่สำเร็จหรือไม่พบตัวเลข ลองภาพที่ชัดขึ้น หรือกรอกเอง
-</div>
-)}
-{candidates.length > 0 && (
-<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-{candidates.map((c, i) => (
-<button
-key={i}
-onClick={() => { onChange(c.value); setCandidates([]); }}
-style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, padding: "4px 9px", borderRadius: 999, border: c.guess ? "1px solid #2F5D46" : "1px solid #C9C2B2", background: c.guess ? "#EAF2ED" : "#FFFFFF", color: "#202B29", cursor: "pointer" }}
->
-{c.guess ? "★ " : ""}{fmt(c.value)}
-</button>
-))}
-</div>
-)}
 </div>
 );
 }
 
-function InsuranceRow({ item, onUpdate, onRemove, keywords }) {
-const [ocrBusy, setOcrBusy] = useState(false);
-const [ocrError, setOcrError] = useState(false);
-const [candidates, setCandidates] = useState([]);
-
-const handleFile = async (e) => {
-const file = e.target.files && e.target.files[0];
-e.target.value = "";
-if (!file) return;
-setOcrError(false);
-setOcrBusy(true);
-setCandidates([]);
-try {
-const text = await ocrImage(file);
-const found = extractNumberCandidates(text, keywords);
-if (found.length === 0) setOcrError(true);
-else if (found.length === 1) onUpdate({ premium: found[0].value });
-else setCandidates(found);
-} catch (err) {
-setOcrError(true);
-} finally {
-setOcrBusy(false);
-}
-};
-
+function InsuranceRow({ item, onUpdate, onRemove }) {
 return (
 <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10, background: "#FBFAF6", border: "1px solid #E6E0D2", borderRadius: 10, padding: 10 }}>
 <div style={{ flex: 1, minWidth: 0 }}>
@@ -345,35 +299,13 @@ value={item.name}
 onChange={(e) => onUpdate({ name: e.target.value })}
 style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#202B29", background: "#FFFFFF", marginBottom: 6 }}
 />
-<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
 <input
 type="number"
 placeholder="เบี้ยประกัน/ปี"
 value={item.premium || ""}
 onChange={(e) => onUpdate({ premium: parseFloat(e.target.value) || 0 })}
-style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: 8, border: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#202B29", background: "#FFFFFF" }}
+style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#202B29", background: "#FFFFFF" }}
 />
-<label title="อ่านค่าในเครื่องเท่านั้น ไม่เก็บ/ไม่อัปโหลดรูป" style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#2B4C6F", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
-{ocrBusy ? "..." : "📷"}
-<input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleFile} />
-</label>
-</div>
-{ocrError && (
-<div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#7A2E1F", marginTop: 4 }}>อ่านภาพไม่สำเร็จ กรอกเองได้เลย</div>
-)}
-{candidates.length > 0 && (
-<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-{candidates.map((c, i) => (
-<button
-key={i}
-onClick={() => { onUpdate({ premium: c.value }); setCandidates([]); }}
-style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, padding: "3px 8px", borderRadius: 999, border: c.guess ? "1px solid #2F5D46" : "1px solid #C9C2B2", background: c.guess ? "#EAF2ED" : "#FFFFFF", cursor: "pointer" }}
->
-{c.guess ? "★ " : ""}{fmt(c.value)}
-</button>
-))}
-</div>
-)}
 </div>
 <button onClick={onRemove} title="ลบกรมธรรม์นี้" style={{ background: "none", border: "none", color: "#A79E8E", fontSize: 16, cursor: "pointer", padding: "4px 6px", flexShrink: 0 }}>✕</button>
 </div>
@@ -431,7 +363,7 @@ return (
 </div>
 )}
 {items.map((it) => (
-<InsuranceRow key={it.id} item={it} onUpdate={(patch) => updateItem(it.id, patch)} onRemove={() => removeItem(it.id)} keywords={keywords} />
+<InsuranceRow key={it.id} item={it} onUpdate={(patch) => updateItem(it.id, patch)} onRemove={() => removeItem(it.id)} />
 ))}
 <div style={{ display: "flex", gap: 8 }}>
 <button
@@ -473,11 +405,10 @@ try {
 const text = await ocrImage(file);
 const values = {};
 const detected = new Set();
-TAX_FIELD_DEFS.forEach((f) => {
-const found = extractNumberCandidates(text, f.keywords);
-const best = found.find((c) => c.guess);
-if (best) {
-values[f.key] = best.value;
+OCR_FIELD_DEFS.forEach((f) => {
+const val = readFieldFromText(text, f.keywords);
+if (val !== null) {
+values[f.key] = val;
 detected.add(f.key);
 } else {
 values[f.key] = currentValues[f.key] || 0;
@@ -501,7 +432,7 @@ return (
 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#5B7594", marginBottom: 10 }}>
 พบ {review.detected.size} ค่าในภาพนี้ · แก้ไขตัวเลขได้ก่อนบันทึก
 </div>
-{TAX_FIELD_DEFS.map((f) => (
+{OCR_FIELD_DEFS.map((f) => (
 <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
 <span style={{ flex: 1, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#202B29" }}>
 {review.detected.has(f.key) ? "✓ " : ""}{f.label}
@@ -573,6 +504,8 @@ const insTotal = (list) => (list || []).reduce((s, it) => s + (Number(it.premium
 const sumField = (key) => monthsFilled.reduce((s, m) => s + (Number(m.data[key]) || 0), 0);
 const totals = {
 salary: sumField("salary"),
+baseSalary: sumField("baseSalary"),
+fixedBonus: sumField("fixedBonus"),
 wht: sumField("wht"),
 sso: sumField("sso"),
 pvd: sumField("pvd"),
@@ -647,7 +580,7 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 <PayslipUpload currentValues={monthData} onApply={(values) => updateMonth(values)} />
 
 {TAX_FIELD_DEFS.map((f) => (
-<OcrNumberField key={f.key} label={f.label} unit={f.unit} value={monthData[f.key]} onChange={(v) => updateMonth({ [f.key]: v })} keywords={f.keywords} />
+<NumberField key={f.key} label={f.label} unit={f.unit} value={monthData[f.key]} onChange={(v) => updateMonth({ [f.key]: v })} />
 ))}
 
 <div style={{ height: 1, background: "#E6E0D2", margin: "16px 0" }} />
@@ -663,7 +596,9 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 <thead>
 <tr style={{ background: "#F6F3EC" }}>
 <th style={{ ...thStyle, textAlign: "left" }}>เดือน</th>
-<th style={thStyle}>เงินเดือน</th>
+<th style={thStyle}>ค่าจ้าง</th>
+<th style={thStyle}>ฐานเงินเดือน</th>
+<th style={thStyle}>โบนัส</th>
 <th style={thStyle}>ภาษีหัก</th>
 <th style={thStyle}>SSO</th>
 <th style={thStyle}>PVD</th>
@@ -677,6 +612,8 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 <tr key={m.key} onClick={() => setMonthKey(m.key)} style={{ cursor: "pointer", background: m.key === monthKey ? "#EAF0F6" : "transparent" }}>
 <td style={{ ...tdStyle, textAlign: "left", fontWeight: 600 }}>{m.label}</td>
 <td style={tdStyle}>{fmt(m.data.salary)}</td>
+<td style={tdStyle}>{fmt(m.data.baseSalary)}</td>
+<td style={tdStyle}>{fmt(m.data.fixedBonus)}</td>
 <td style={tdStyle}>{fmt(m.data.wht)}</td>
 <td style={tdStyle}>{fmt(m.data.sso)}</td>
 <td style={tdStyle}>{fmt(m.data.pvd)}</td>
@@ -690,6 +627,8 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 <tr style={{ background: "#FBF7EC" }}>
 <td style={{ ...tdStyle, textAlign: "left", fontWeight: 700 }}>รวม</td>
 <td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.salary)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.baseSalary)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.fixedBonus)}</td>
 <td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.wht)}</td>
 <td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.sso)}</td>
 <td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.pvd)}</td>
@@ -718,7 +657,7 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 </div>
 
 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-แนบสลิปเงินเดือน 1 ใบที่ปุ่ม "📷 แนบสลิปเงินเดือน/เอกสาร" ด้านบน — ระบบจะพยายามอ่านเงินเดือน/ภาษีหัก/ประกันสังคม/PVD/ดอกเบี้ยบ้านให้พร้อมกันในครั้งเดียว แล้วให้ตรวจสอบตัวเลขก่อนบันทึก ส่วนเบี้ยประกันแตะ "📷 แนบรูปกรมธรรม์" ในหมวดประกันชีวิต/สุขภาพ ระบบจะเพิ่มรายการใหม่และกรอกยอดเบี้ยประกันให้จากภาพทันที (ชื่อกรมธรรม์ยังต้องพิมพ์เองเพราะอ่านจากภาพไม่แม่นยำพอ) หรือกรอกเองได้ตลอดเวลาทุกช่อง ข้อมูลจะซิงก์ไปกับ Google Drive เดียวกับหน้าภาพรวมการเงิน
+แนบสลิปเงินเดือน 1 ใบที่ปุ่ม "📷 แนบสลิปเงินเดือน/เอกสาร" ด้านบน — ระบบจะอ่าน ค่าจ้าง (จากบรรทัด "รวมเงินได้") / ฐานเงินเดือน / โบนัสคงที่ / ภาษีหัก ณ ที่จ่าย / ประกันสังคม / กองทุนสำรองเลี้ยงชีพ (PVD) ให้พร้อมกันในครั้งเดียว แล้วให้ตรวจสอบตัวเลขก่อนบันทึก ส่วนดอกเบี้ยเงินกู้ที่อยู่อาศัยให้กรอกเอง สำหรับเบี้ยประกันแตะ "📷 แนบรูปกรมธรรม์" ในหมวดประกันชีวิต/สุขภาพ ระบบจะเพิ่มรายการใหม่และกรอกยอดเบี้ยประกันให้จากภาพทันที (ชื่อกรมธรรม์ยังต้องพิมพ์เองเพราะอ่านจากภาพไม่แม่นยำพอ) หรือกรอกเองได้ตลอดเวลาทุกช่อง ข้อมูลจะซิงก์ไปกับ Google Drive เดียวกับหน้าภาพรวมการเงิน
 </div>
 </div>
 </div>
