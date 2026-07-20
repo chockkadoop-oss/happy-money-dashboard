@@ -17,14 +17,16 @@ body { background: #F6F3EC; }
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script type="text/babel" data-presets="react">
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 const fmt = (n) => "฿" + Math.round(n || 0).toLocaleString("th-TH");
 const pct = (n, total) => ((n / total) * 100).toFixed(1) + "%";
 
-// 🔧 Same Google Apps Script URL as the finance dashboard, so both pages sync
-// to the same Google Drive JSON. This page only ever reads/writes the "taxPrep"
-// part of that JSON, so editing this file cannot affect the dashboard's data.
-const DRIVE_API_URL = "https://script.google.com/macros/s/AKfycbx7icu7pxNBl1guS0pMXkzZ8F7KMKVIIL2Yvw7O5SJ6AJwJ-dM6hWJ3pSwA8mo8QdPK/exec";
+// 🔧 ที่เก็บข้อมูลภาษี "แยกต่างหาก" จากหน้าภาพรวมการเงิน
+// วาง URL ของ Google Apps Script Web App "ตัวที่ 2" (คนละ deployment / คนละ
+// ไฟล์บน Drive กับของภาพรวมการเงิน) ตรงนี้ ปลายทางลงท้ายด้วย /exec
+// ➜ ตราบใดที่ยังไม่วาง ข้อมูลภาษีจะถูกเก็บในเบราว์เซอร์เครื่องนี้ (localStorage)
+//   ซึ่งก็แยกจากข้อมูลภาพรวมการเงินอยู่แล้ว ไม่ปนกันแน่นอน
+const DRIVE_API_URL = "https://script.google.com/macros/s/AKfycbzji3LRjHP7NTk6LMfvnUgDZg_hhRr_mfMKY1BbY0iXW-E7bsADA6zxHvSa6QOjRzju4A/exec";
 const DRIVE_CONFIGURED = DRIVE_API_URL && DRIVE_API_URL.indexOf("PASTE_YOUR") === -1;
 const LOCAL_FALLBACK_KEY = "happy-money-tax-fallback";
 
@@ -410,19 +412,32 @@ return (
 const thStyle = { textAlign: "right", padding: "8px 6px", color: "#6B6459", fontWeight: 600, whiteSpace: "nowrap", borderBottom: "1px solid #E6E0D2" };
 const tdStyle = { textAlign: "right", padding: "7px 6px", whiteSpace: "nowrap", borderBottom: "1px solid #F0EBDD" };
 
-function TaxPrep({ allData, loaded, syncError, persist }) {
+function useWindowWidth() {
+const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 480);
+useEffect(() => {
+const onResize = () => setW(window.innerWidth);
+window.addEventListener("resize", onResize);
+return () => window.removeEventListener("resize", onResize);
+}, []);
+return w;
+}
+
+function TaxPrep({ data, loaded, syncError, persist }) {
 const [year, setYear] = useState(DEFAULT_TAX_YEAR);
 const [monthKey, setMonthKey] = useState(TAX_MONTHS[Math.min(new Date().getMonth(), 11)].key);
+const viewportWidth = useWindowWidth();
+const isTablet = viewportWidth >= 640;
+const isDesktop = viewportWidth >= 1024;
+const containerMaxWidth = isDesktop ? 880 : isTablet ? 640 : 480;
 
-const taxRoot = allData.taxPrep || {};
+const taxRoot = data || {};
 const yearData = taxRoot[year] || { months: {} };
 const monthData = { ...emptyTaxMonth(), ...(yearData.months[monthKey] || {}) };
 
 const updateMonth = (patch) => {
 const nextMonth = { ...monthData, ...patch };
 const nextYearData = { ...yearData, months: { ...yearData.months, [monthKey]: nextMonth } };
-const nextTaxRoot = { ...taxRoot, [year]: nextYearData };
-persist({ ...allData, taxPrep: nextTaxRoot });
+persist({ ...taxRoot, [year]: nextYearData });
 };
 
 const monthsFilled = TAX_MONTHS.map((m) => ({ ...m, data: { ...emptyTaxMonth(), ...(yearData.months[m.key] || {}) } }));
@@ -449,16 +464,16 @@ return (
 }
 
 return (
-<div style={{ padding: "20px 16px 60px", display: "flex", justifyContent: "center" }}>
-<div style={{ width: "100%", maxWidth: 480 }}>
+<div style={{ padding: isDesktop ? "24px 28px 60px" : "20px 16px 60px", display: "flex", justifyContent: "center" }}>
+<div style={{ width: "100%", maxWidth: containerMaxWidth }}>
 <SectionTitle eyebrow="เตรียมยื่นภาษี" title={`ข้อมูลภาษีปี ${year}`} accent="#2B4C6F" />
 
 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, marginBottom: 14, color: syncError ? "#7A2E1F" : DRIVE_CONFIGURED ? "#2F5D46" : "#AD8A2E" }}>
 {syncError
-? "⚠️ ซิงก์ Google Drive ไม่สำเร็จ — ใช้ข้อมูลล่าสุดที่มีอยู่ไปก่อน"
+? "⚠️ ซิงก์ไม่สำเร็จ — แสดงข้อมูลล่าสุดที่มี และหยุดเขียนทับไว้ก่อนเพื่อกันข้อมูลหาย"
 : DRIVE_CONFIGURED
-? "☁️ ซิงก์กับ Google Drive เดียวกับหน้าภาพรวมการเงิน"
-: "ยังไม่ได้ตั้งค่า Google Drive — ข้อมูลเก็บไว้ในเบราว์เซอร์นี้ก่อน"}
+? "☁️ เก็บแยกในที่เก็บภาษีของตัวเอง (คนละไฟล์กับภาพรวมการเงิน)"
+: "ยังไม่ได้ตั้งค่าที่เก็บภาษีบนคลาวด์ — เก็บในเบราว์เซอร์นี้ (แยกจากภาพรวมการเงินอยู่แล้ว)"}
 </div>
 
 <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
@@ -505,14 +520,18 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 
 <PayslipUpload currentValues={monthData} onApply={(values) => updateMonth(values)} />
 
+<div style={{ display: "grid", gridTemplateColumns: isTablet ? "1fr 1fr" : "1fr", columnGap: 16 }}>
 {TAX_FIELD_DEFS.map((f) => (
 <NumberField key={f.key} label={f.label} unit={f.unit} value={monthData[f.key]} onChange={(v) => updateMonth({ [f.key]: v })} />
 ))}
+</div>
 
 <div style={{ height: 1, background: "#E6E0D2", margin: "16px 0" }} />
 
+<div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", columnGap: 20 }}>
 <InsuranceList title={INSURANCE_TYPES[0].label} items={monthData.lifeInsurance} onChange={(items) => updateMonth({ lifeInsurance: items })} keywords={INSURANCE_TYPES[0].keywords} />
 <InsuranceList title={INSURANCE_TYPES[1].label} items={monthData.healthInsurance} onChange={(items) => updateMonth({ healthInsurance: items })} keywords={INSURANCE_TYPES[1].keywords} />
+</div>
 </div>
 
 <SectionTitle eyebrow="สรุปทั้งปี" title={`รวม 12 เดือน ปี ${year}`} accent="#2B4C6F" />
@@ -583,7 +602,7 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 </div>
 
 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-แนบสลิปเงินเดือน 1 ใบที่ปุ่ม "📷 แนบสลิปเงินเดือน/เอกสาร" ด้านบน — ระบบจะอ่าน ค่าจ้าง (จากบรรทัด "รวมเงินได้") / ฐานเงินเดือน / โบนัสคงที่ / ภาษีหัก ณ ที่จ่าย / ประกันสังคม / กองทุนสำรองเลี้ยงชีพ (PVD) ให้พร้อมกันในครั้งเดียว แล้วให้ตรวจสอบตัวเลขก่อนบันทึก ถ้าตัวหนังสือไทยในภาพไม่ชัดจนจับคู่ช่องอัตโนมัติไม่ได้ ระบบจะแสดงตัวเลขทั้งหมดที่เจอให้แตะเลือกใส่แต่ละช่องแทน (หรือดู "ข้อความที่อ่านได้จากภาพ" เพื่อตรวจ) ส่วนดอกเบี้ยเงินกู้ที่อยู่อาศัยให้กรอกเอง สำหรับเบี้ยประกันแตะ "📷 แนบรูปกรมธรรม์" ในหมวดประกันชีวิต/สุขภาพ ระบบจะเพิ่มรายการใหม่และกรอกยอดเบี้ยประกันให้จากภาพทันที (ชื่อกรมธรรม์ยังต้องพิมพ์เองเพราะอ่านจากภาพไม่แม่นยำพอ) หรือกรอกเองได้ตลอดเวลาทุกช่อง ข้อมูลจะซิงก์ไปกับ Google Drive เดียวกับหน้าภาพรวมการเงิน
+แนบสลิปเงินเดือน 1 ใบที่ปุ่ม "📷 แนบสลิปเงินเดือน/เอกสาร" ด้านบน — ระบบจะอ่าน ค่าจ้าง (จากบรรทัด "รวมเงินได้") / ฐานเงินเดือน / โบนัสคงที่ / ภาษีหัก ณ ที่จ่าย / ประกันสังคม / กองทุนสำรองเลี้ยงชีพ (PVD) ให้พร้อมกันในครั้งเดียว แล้วให้ตรวจสอบตัวเลขก่อนบันทึก ถ้าตัวหนังสือไทยในภาพไม่ชัดจนจับคู่ช่องอัตโนมัติไม่ได้ ระบบจะแสดงตัวเลขทั้งหมดที่เจอให้แตะเลือกใส่แต่ละช่องแทน (หรือดู "ข้อความที่อ่านได้จากภาพ" เพื่อตรวจ) ส่วนดอกเบี้ยเงินกู้ที่อยู่อาศัยให้กรอกเอง สำหรับเบี้ยประกันแตะ "📷 แนบรูปกรมธรรม์" ในหมวดประกันชีวิต/สุขภาพ ระบบจะเพิ่มรายการใหม่และกรอกยอดเบี้ยประกันให้จากภาพทันที (ชื่อกรมธรรม์ยังต้องพิมพ์เองเพราะอ่านจากภาพไม่แม่นยำพอ) หรือกรอกเองได้ตลอดเวลาทุกช่อง ข้อมูลภาษีถูกเก็บแยกในที่เก็บของตัวเอง (คนละไฟล์กับหน้าภาพรวมการเงิน) แก้หรือพังฝั่งไหนก็ไม่กระทบอีกฝั่ง
 </div>
 </div>
 </div>
@@ -591,9 +610,11 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 }
 
 function CrossLink() {
+const vw = useWindowWidth();
+const navMax = vw >= 1024 ? 880 : vw >= 640 ? 640 : 480;
 return (
 <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#F6F3EC", borderBottom: "1px solid #E6E0D2", display: "flex", justifyContent: "center" }}>
-<div style={{ width: "100%", maxWidth: 480, display: "flex", gap: 8, padding: "14px 16px 10px" }}>
+<div style={{ width: "100%", maxWidth: navMax, display: "flex", gap: 8, padding: "14px 16px 10px" }}>
 <a href="index.html" style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459" }}>ภาพรวมการเงิน</a>
 <span style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1.5px solid #2B4C6F", background: "#2B4C6F", color: "#FFFFFF" }}>เตรียมภาษี</span>
 </div>
@@ -602,46 +623,54 @@ return (
 }
 
 function App() {
-const [allData, setAllData] = useState({});
+// taxData IS the whole tax store (its own JSON blob), keyed by year:
+//   { "2569": { months: { "01": {...}, ... } }, ... }
+// It lives at its OWN endpoint, completely separate from the finance page.
+const [taxData, setTaxData] = useState({});
 const [loaded, setLoaded] = useState(false);
 const [syncError, setSyncError] = useState(false);
+// If the initial cloud load fails, we must NOT write back — otherwise a
+// partial/empty state could overwrite good cloud data. This blocks cloud
+// writes until a successful load has happened.
+const cloudSafe = useRef(!DRIVE_CONFIGURED);
 
 useEffect(() => {
 let mounted = true;
 if (!DRIVE_CONFIGURED) {
 try {
 const raw = localStorage.getItem(LOCAL_FALLBACK_KEY);
-if (mounted) setAllData(raw ? JSON.parse(raw) : {});
+if (mounted) setTaxData(raw ? JSON.parse(raw) : {});
 } catch (e) {}
 if (mounted) setLoaded(true);
 return;
 }
 fetch(DRIVE_API_URL)
 .then((r) => r.json())
-.then((data) => { if (mounted) setAllData(data || {}); })
+.then((data) => { if (mounted) { setTaxData(data || {}); cloudSafe.current = true; } })
 .catch(() => { if (mounted) setSyncError(true); })
 .finally(() => { if (mounted) setLoaded(true); });
 return () => { mounted = false; };
 }, []);
 
-const persist = (nextAllData) => {
-setAllData(nextAllData);
+const persist = (nextTaxData) => {
+setTaxData(nextTaxData);
 if (!DRIVE_CONFIGURED) {
-try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(nextAllData)); } catch (e) {}
+try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(nextTaxData)); } catch (e) {}
 return;
 }
+if (!cloudSafe.current) return; // load failed earlier — keep it local, don't clobber cloud
 setSyncError(false);
 fetch(DRIVE_API_URL, {
 method: "POST",
 headers: { "Content-Type": "text/plain;charset=utf-8" },
-body: JSON.stringify(nextAllData),
+body: JSON.stringify(nextTaxData),
 }).catch(() => setSyncError(true));
 };
 
 return (
 <div style={{ minHeight: "100vh", background: "#F6F3EC" }}>
 <CrossLink />
-<TaxPrep allData={allData} loaded={loaded} syncError={syncError} persist={persist} />
+<TaxPrep data={taxData} loaded={loaded} syncError={syncError} persist={persist} />
 </div>
 );
 }
