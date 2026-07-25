@@ -18,6 +18,8 @@ body { background: #F6F3EC; }
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef } = React;
 const fmt = (n) => "฿" + Math.round(n || 0).toLocaleString("th-TH");
+// ใช้เฉพาะในตาราง "สรุปทั้งปี" ตามที่ขอ ให้แสดงทศนิยม 2 ตำแหน่งเสมอ
+const fmt2 = (n) => "฿" + (Math.round((n || 0) * 100) / 100).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const pct = (n, total) => ((n / total) * 100).toFixed(1) + "%";
 
 // 🔧 ที่เก็บข้อมูลภาษี "แยกต่างหาก" จากหน้าภาพรวมการเงิน
@@ -40,12 +42,17 @@ const TAX_MONTHS = [
 const TAX_FIELD_DEFS = [
 { key: "salary", label: "ค่าจ้าง (รวมเงินได้)", unit: "บาท/เดือน" },
 { key: "wht", label: "ภาษีหัก ณ ที่จ่าย", unit: "บาท/เดือน" },
-{ key: "baseSalary", label: "ฐานเงินเดือน", unit: "บาท/เดือน" },
+{ key: "baseSalary", label: "ฐานเงินเดือน", unit: "บาท/เดือน", inheritFromJan: true },
 { key: "fixedBonus", label: "โบนัสคงที่", unit: "บาท/เดือน" },
-{ key: "sso", label: "ประกันสังคม (SSO)", unit: "บาท/เดือน" },
-{ key: "pvd", label: "กองทุนสำรองเลี้ยงชีพ (PVD)", unit: "บาท/เดือน" },
+{ key: "sso", label: "ประกันสังคม (SSO)", unit: "บาท/เดือน", inheritFromJan: true },
+{ key: "pvd", label: "กองทุนสำรองเลี้ยงชีพ (PVD)", unit: "บาท/เดือน", inheritFromJan: true },
 { key: "houseInterest", label: "ดอกเบี้ยเงินกู้ที่อยู่อาศัย", unit: "บาท/เดือน" },
 ];
+// ฟิลด์ที่ปกติไม่เปลี่ยนระหว่างปี (ฐานเงินเดือน/SSO/PVD) — กรอกแค่เดือน ม.ค.
+// เดือนเดียว เดือนอื่นในปีเดียวกันจะ "ยกยอด" ค่าของเดือน ม.ค. มาแสดง/ใช้คำนวณ
+// ให้อัตโนมัติ แต่ยังแก้เฉพาะเดือนใดเดือนหนึ่งทีหลังได้เสมอ (พิมพ์ค่าใหม่ในเดือน
+// นั้นจะ "ตัดขาด" จากค่าของเดือน ม.ค. เฉพาะเดือนนั้นเดือนเดียว)
+const CARRY_FROM_JAN_FIELDS = TAX_FIELD_DEFS.filter((f) => f.inheritFromJan).map((f) => f.key);
 
 const INSURANCE_TYPES = [
 { key: "lifeInsurance", label: "เบี้ยประกันชีวิต" },
@@ -56,6 +63,31 @@ const emptyTaxMonth = () => ({
 salary: 0, baseSalary: 0, fixedBonus: 0, wht: 0, sso: 0, pvd: 0, houseInterest: 0,
 lifeInsurance: [], healthInsurance: [], specialDeductions: [],
 });
+
+// true ถ้าเดือนนั้นเคยถูกกรอก/บันทึกค่าของ field นี้ไว้อย่างชัดเจน (ไม่ใช่แค่
+// ค่าเริ่มต้น 0 จาก emptyTaxMonth) — ใช้แยกแยะ "ยังไม่เคยกรอก จึงยกยอดจาก ม.ค.
+// มาแสดง" ออกจาก "กรอกไว้แล้วจริง ๆ (แม้จะเป็น 0 ก็ตาม)"
+function monthHasExplicitField(monthsObj, monthKey, field) {
+const raw = monthsObj && monthsObj[monthKey];
+return !!(raw && Object.prototype.hasOwnProperty.call(raw, field));
+}
+// ค่าที่ "ใช้จริง" ของเดือนหนึ่ง: เอาค่าที่บันทึกไว้ของเดือนนั้นมาก่อน ถ้า field
+// ไหนอยู่ใน CARRY_FROM_JAN_FIELDS และเดือนนั้นยังไม่เคยกรอกเอง (และไม่ใช่เดือน
+// ม.ค.) จะยกยอดค่าของเดือน ม.ค. (ปีเดียวกัน) มาใช้แทนโดยอัตโนมัติ
+function computeEffectiveMonthData(yearData, monthKey) {
+const monthsObj = (yearData && yearData.months) || {};
+const raw = monthsObj[monthKey] || {};
+const base = { ...emptyTaxMonth(), ...raw };
+if (monthKey !== "01") {
+const janRaw = monthsObj["01"] || {};
+CARRY_FROM_JAN_FIELDS.forEach((field) => {
+if (!monthHasExplicitField(monthsObj, monthKey, field) && monthHasExplicitField(monthsObj, "01", field)) {
+base[field] = janRaw[field];
+}
+});
+}
+return base;
+}
 
 // ปีภาษี (พ.ศ.) คำนวณจากวันที่ปัจจุบันเสมอ แทนที่จะ hardcode ไว้ — ป้องกันไม่ให้
 // รายการปีล้าสมัยเมื่อเวลาผ่านไป
@@ -91,7 +123,7 @@ return (
 }
 
 // ---------- Tax Prep building blocks ----------
-function NumberField({ label, unit, value, onChange }) {
+function NumberField({ label, unit, value, onChange, note }) {
 return (
 <div style={{ marginBottom: 14 }}>
 <div style={{ marginBottom: 5 }}>
@@ -105,6 +137,7 @@ onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
 placeholder="0"
 style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 14, color: "#202B29", background: "#FBFAF6" }}
 />
+{note && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#AD8A2E", marginTop: 4 }}>{note}</div>}
 </div>
 );
 }
@@ -214,11 +247,11 @@ const [newYearInput, setNewYearInput] = useState("");
 const viewportWidth = useWindowWidth();
 const isTablet = viewportWidth >= 640;
 const isDesktop = viewportWidth >= 1024;
-const containerMaxWidth = isDesktop ? 880 : isTablet ? 640 : 480;
+const containerMaxWidth = isDesktop ? 1040 : isTablet ? 640 : 480;
 
 const taxRoot = data || {};
 const yearData = taxRoot[year] || { months: {} };
-const monthData = { ...emptyTaxMonth(), ...(yearData.months[monthKey] || {}) };
+const monthData = computeEffectiveMonthData(yearData, monthKey);
 
 // รายการปีให้เลือก: gen ให้อัตโนมัติเสมอ (ย้อนหลัง 2 ปี ถึงล่วงหน้า 1 ปี) รวมกับ
 // ปีไหนก็ตามที่เคยมีข้อมูลบันทึกไว้แล้ว (แม้จะอยู่นอกช่วงเริ่มต้น) และปีที่
@@ -235,12 +268,17 @@ setYear(yStr);
 };
 
 const updateMonth = (patch) => {
-const nextMonth = { ...monthData, ...patch };
+// สำคัญ: merge เข้ากับ "ค่าดิบที่เคยบันทึกไว้จริง" ของเดือนนี้ ไม่ใช่ monthData
+// (ซึ่งอาจมีค่าที่ยกยอดมาจาก ม.ค. ปนอยู่) — ไม่งั้นแค่แก้ field อื่น (เช่น
+// ค่าจ้าง) ก็จะพาลไป "ล็อก" ค่า ฐานเงินเดือน/SSO/PVD ที่ยกยอดมาให้กลายเป็นค่า
+// เฉพาะเดือนนี้ไปด้วยโดยไม่ตั้งใจ ทำให้เดือนนี้เลิกตามค่า ม.ค. ในอนาคต
+const rawMonth = (yearData.months && yearData.months[monthKey]) || {};
+const nextMonth = { ...rawMonth, ...patch };
 const nextYearData = { ...yearData, months: { ...yearData.months, [monthKey]: nextMonth } };
 persist({ ...taxRoot, [year]: nextYearData });
 };
 
-const monthsFilled = TAX_MONTHS.map((m) => ({ ...m, data: { ...emptyTaxMonth(), ...(yearData.months[m.key] || {}) } }));
+const monthsFilled = TAX_MONTHS.map((m) => ({ ...m, data: computeEffectiveMonthData(yearData, m.key) }));
 const listTotal = (list, field) => (list || []).reduce((s, it) => s + (Number(it[field]) || 0), 0);
 const insTotal = (list) => listTotal(list, "premium");
 const sumField = (key) => monthsFilled.reduce((s, m) => s + (Number(m.data[key]) || 0), 0);
@@ -266,7 +304,7 @@ return (
 }
 
 return (
-<div style={{ padding: isDesktop ? "0 28px 60px" : "0 16px 60px", display: "flex", justifyContent: "center" }}>
+<div style={{ padding: isDesktop ? "0 28px 60px" : isTablet ? "0 20px 60px" : "0 16px 60px", display: "flex", justifyContent: "center" }}>
 <div style={{ width: "100%", maxWidth: containerMaxWidth }}>
 <SectionTitle eyebrow="เตรียมยื่นภาษี" title={`ข้อมูลภาษีปี ${year}`} accent="#2B4C6F" />
 
@@ -352,9 +390,17 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 </div>
 
 <div style={{ display: "grid", gridTemplateColumns: isTablet ? "1fr 1fr" : "1fr", columnGap: 16 }}>
-{TAX_FIELD_DEFS.map((f) => (
-<NumberField key={f.key} label={f.label} unit={f.unit} value={monthData[f.key]} onChange={(v) => updateMonth({ [f.key]: v })} />
-))}
+{TAX_FIELD_DEFS.map((f) => {
+let note = null;
+if (f.inheritFromJan) {
+if (monthKey === "01") {
+note = "กรอกที่เดือนนี้เดือนเดียว เดือนอื่นในปีเดียวกันจะใช้ค่านี้อัตโนมัติ (แก้ไขเฉพาะเดือนทีหลังได้)";
+} else if (!monthHasExplicitField(yearData.months, monthKey, f.key) && monthHasExplicitField(yearData.months, "01", f.key)) {
+note = `ใช้ค่าจากเดือน ม.ค. ${year} อัตโนมัติ · พิมพ์ค่าใหม่เพื่อแก้เฉพาะเดือนนี้`;
+}
+}
+return <NumberField key={f.key} label={f.label} unit={f.unit} value={monthData[f.key]} onChange={(v) => updateMonth({ [f.key]: v })} note={note} />;
+})}
 <div style={{ marginBottom: 14 }}>
 <div style={{ marginBottom: 5 }}>
 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#202B29" }}>รายการลดหย่อนพิเศษ</div>
@@ -395,32 +441,32 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 {monthsFilled.map((m) => (
 <tr key={m.key} onClick={() => setMonthKey(m.key)} style={{ cursor: "pointer", background: m.key === monthKey ? "#EAF0F6" : "transparent" }}>
 <td style={{ ...tdStyle, textAlign: "left", fontWeight: 600 }}>{m.label}</td>
-<td style={tdStyle}>{fmt(m.data.salary)}</td>
-<td style={tdStyle}>{fmt(m.data.wht)}</td>
-<td style={tdStyle}>{fmt(m.data.baseSalary)}</td>
-<td style={tdStyle}>{fmt(m.data.fixedBonus)}</td>
-<td style={tdStyle}>{fmt(m.data.sso)}</td>
-<td style={tdStyle}>{fmt(m.data.pvd)}</td>
-<td style={tdStyle}>{fmt(insTotal(m.data.lifeInsurance))}</td>
-<td style={tdStyle}>{fmt(insTotal(m.data.healthInsurance))}</td>
-<td style={tdStyle}>{fmt(m.data.houseInterest)}</td>
-<td style={tdStyle}>{fmt(listTotal(m.data.specialDeductions, "amount"))}</td>
+<td style={tdStyle}>{fmt2(m.data.salary)}</td>
+<td style={tdStyle}>{fmt2(m.data.wht)}</td>
+<td style={tdStyle}>{fmt2(m.data.baseSalary)}</td>
+<td style={tdStyle}>{fmt2(m.data.fixedBonus)}</td>
+<td style={tdStyle}>{fmt2(m.data.sso)}</td>
+<td style={tdStyle}>{fmt2(m.data.pvd)}</td>
+<td style={tdStyle}>{fmt2(insTotal(m.data.lifeInsurance))}</td>
+<td style={tdStyle}>{fmt2(insTotal(m.data.healthInsurance))}</td>
+<td style={tdStyle}>{fmt2(m.data.houseInterest)}</td>
+<td style={tdStyle}>{fmt2(listTotal(m.data.specialDeductions, "amount"))}</td>
 </tr>
 ))}
 </tbody>
 <tfoot>
 <tr style={{ background: "#FBF7EC" }}>
 <td style={{ ...tdStyle, textAlign: "left", fontWeight: 700 }}>รวม</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.salary)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.wht)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.baseSalary)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.fixedBonus)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.sso)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.pvd)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.lifeInsurance)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.healthInsurance)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.houseInterest)}</td>
-<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt(totals.specialDeductions)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.salary)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.wht)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.baseSalary)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.fixedBonus)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.sso)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.pvd)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.lifeInsurance)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.healthInsurance)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.houseInterest)}</td>
+<td style={{ ...tdStyle, fontWeight: 700 }}>{fmt2(totals.specialDeductions)}</td>
 </tr>
 </tfoot>
 </table>
@@ -443,7 +489,7 @@ style={{ background: "none", border: "none", color: "#AD8A2E", fontFamily: "'IBM
 </div>
 
 <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-กรอกตัวเลขแต่ละเดือนด้วยตัวเองในช่องด้านบน (ค่าจ้าง ฐานเงินเดือน โบนัสคงที่ ภาษีหัก ณ ที่จ่าย ประกันสังคม กองทุนสำรองเลี้ยงชีพ และดอกเบี้ยเงินกู้ที่อยู่อาศัย) ส่วนเบี้ยประกันชีวิต/สุขภาพและรายการลดหย่อนพิเศษ (เช่น Easy E-Receipt หรือมาตรการอื่น ๆ ที่ประกาศเพิ่มเติมแต่ละปี) กดปุ่ม "+ เพิ่ม..." ที่แต่ละกล่องเพื่อเพิ่มรายการแล้วกรอกชื่อและจำนวนเงินเอง ปุ่มปีภาษีด้านบนจะ gen ให้เองล่วงหน้าเสมออย่างน้อย 1 ปี และถ้าต้องการปีอื่นนอกเหนือจากนี้ (เช่นปีเก่ามาก ๆ) กดปุ่ม "+ เพิ่มปี" เพื่อเพิ่มเองได้ ข้อมูลภาษีถูกเก็บแยกในที่เก็บของตัวเอง (คนละไฟล์กับหน้าภาพรวมการเงิน) แก้หรือพังฝั่งไหนก็ไม่กระทบอีกฝั่ง
+กรอกตัวเลขแต่ละเดือนด้วยตัวเองในช่องด้านบน (ค่าจ้าง โบนัสคงที่ ภาษีหัก ณ ที่จ่าย และดอกเบี้ยเงินกู้ที่อยู่อาศัย มักเปลี่ยนได้ทุกเดือนจึงต้องกรอกทีละเดือน) ส่วนฐานเงินเดือน ประกันสังคม (SSO) และกองทุนสำรองเลี้ยงชีพ (PVD) ปกติจะคงที่ตลอดปี กรอกแค่เดือน ม.ค. เดือนเดียว ระบบจะยกยอดค่าของเดือน ม.ค. ไปแสดงและใช้คำนวณให้ทุกเดือนที่เหลือในปีเดียวกันโดยอัตโนมัติ แต่ยังแก้ไขเฉพาะเดือนใดเดือนหนึ่งภายหลังได้เสมอ (พิมพ์ค่าใหม่ในเดือนนั้นจะตัดขาดจากค่าเดือน ม.ค. เฉพาะเดือนนั้น) ส่วนเบี้ยประกันชีวิต/สุขภาพและรายการลดหย่อนพิเศษ (เช่น Easy E-Receipt หรือมาตรการอื่น ๆ ที่ประกาศเพิ่มเติมแต่ละปี) กดปุ่ม "+ เพิ่ม..." ที่แต่ละกล่องเพื่อเพิ่มรายการแล้วกรอกชื่อและจำนวนเงินเอง ตาราง "สรุปทั้งปี" ด้านล่างแสดงยอดเงินเป็นทศนิยม 2 ตำแหน่งเสมอ ปุ่มปีภาษีด้านบนจะ gen ให้เองล่วงหน้าเสมออย่างน้อย 1 ปี และถ้าต้องการปีอื่นนอกเหนือจากนี้ (เช่นปีเก่ามาก ๆ) กดปุ่ม "+ เพิ่มปี" เพื่อเพิ่มเองได้ ข้อมูลภาษีถูกเก็บแยกในที่เก็บของตัวเอง (คนละไฟล์กับหน้าภาพรวมการเงิน) แก้หรือพังฝั่งไหนก็ไม่กระทบอีกฝั่ง
 </div>
 </div>
 </div>
@@ -456,7 +502,7 @@ function CrossLink() {
 const vw = useWindowWidth();
 const isTablet = vw >= 640;
 const isDesktop = vw >= 1024;
-const navMax = isDesktop ? 880 : isTablet ? 640 : 480;
+const navMax = isDesktop ? 1040 : isTablet ? 640 : 480;
 return (
 <div style={{ width: "100%", display: "flex", justifyContent: "center", padding: isDesktop ? "36px 28px 0" : isTablet ? "32px 20px 0" : "28px 16px 0" }}>
 <div style={{ width: "100%", maxWidth: navMax }}>
