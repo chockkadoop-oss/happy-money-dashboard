@@ -46,6 +46,13 @@ const CURRENT_MONTH_ABBR = `${THAI_MONTHS_ABBR[NOW.getMonth()]} ${CURRENT_BE_YEA
 // คีย์นี้จะเปลี่ยนไปเอง ทำให้ไม่มีข้อมูลติ๊กเก่าอยู่ในคีย์ใหม่ — เช็คลิสต์
 // จึงว่างพร้อมให้ติ๊กใหม่ของเดือนนั้นโดยอัตโนมัติ
 const MONTH_KEY = `${CURRENT_BE_YEAR}-${String(NOW.getMonth() + 1).padStart(2, "0")}`;
+// เดือนถัดไป (คำนวณแบบปลอดภัย ไม่ overflow ข้ามปี) ใช้สำหรับมุมมอง "เดือนหน้า"
+// ของรายรับ/กระแสเงินสด
+const NEXT_MONTH_DATE = new Date(NOW.getFullYear(), NOW.getMonth() + 1, 1);
+const NEXT_BE_YEAR = NEXT_MONTH_DATE.getFullYear() + 543;
+const NEXT_MONTH_KEY = `${NEXT_BE_YEAR}-${String(NEXT_MONTH_DATE.getMonth() + 1).padStart(2, "0")}`;
+const NEXT_MONTH_FULL = `${THAI_MONTHS_FULL[NEXT_MONTH_DATE.getMonth()]} ${NEXT_BE_YEAR}`;
+const NEXT_MONTH_ABBR = `${THAI_MONTHS_ABBR[NEXT_MONTH_DATE.getMonth()]} ${NEXT_BE_YEAR}`;
 
 function formatThaiDateTime(d) {
   const day = d.getDate();
@@ -110,7 +117,31 @@ const DEFAULT_VARIABLE_EXPENSE_GROUPS = [
     items: mapItems([["บัตรเครดิต · YouTube",399],["บัตรเครดิต · Google One",350],["บัตรเครดิต · Netflix",99],["บัตรเครดิต · iCloud",99]], "var-app") },
 ];
 
-const INCOME = { total: 132160, items: [["บริษัท 1 (เงินเดือน)",102160],["รายได้เสริม",30000]] };
+// รายรับ ตอนนี้ตั้งค่าได้เองรายเดือน และแยกเป็นหมวดหมู่ได้เหมือนรายจ่าย (เก็บ
+// เป็น "กลุ่มรายการ" แบบเดียวกับ fixedGroups/variableGroups ใน allData.income
+// keyed ด้วย MONTH_KEY) ค่าเริ่มต้นนี้ใช้เป็น seed ให้เดือนแรกที่ยังไม่เคย
+// บันทึกเท่านั้น — ผู้ใช้กด "+ เพิ่มหมวดหมู่ใหม่" เพื่อแยกหมวดเพิ่มเองได้
+function defaultIncomeGroups() {
+  return [
+    { key: "income", label: "รายรับ", color: "#1F6E6B",
+      items: [["บริษัท 1 (เงินเดือน)", 102160], ["รายได้เสริม", 30000]]
+        .map(([name, value], i) => ({ id: `income-${i}`, name, value })) },
+  ];
+}
+// คืนกลุ่มรายรับของเดือนที่ระบุ: ถ้าเดือนนั้นเคยถูกบันทึกไว้แล้วใช้ค่านั้น
+// ถ้ายังไม่เคย ให้ "ยกยอด" มาจากเดือนล่าสุดก่อนหน้าที่เคยบันทึกไว้ (สมมติฐานว่า
+// รายได้ประจำมักจะใกล้เคียงเดือนก่อน) ถ้าไม่เคยมีการบันทึกเลยจึงใช้ค่าเริ่มต้น
+function getIncomeGroupsForMonth(data, monthKey) {
+  const store = (data && data.income) || {};
+  if (store[monthKey]) return store[monthKey];
+  const priorKeys = Object.keys(store).filter((k) => k < monthKey).sort();
+  if (priorKeys.length) return store[priorKeys[priorKeys.length - 1]];
+  return defaultIncomeGroups();
+}
+// รวมยอดของทุกหมวดในกลุ่มรายรับ (หรือกลุ่มอื่น ๆ ที่มีรูปแบบเดียวกัน)
+function sumGroupsValue(groups) {
+  return withTotals(groups).reduce((s, g) => s + g.value, 0);
+}
 
 // Annual / irregular bills with a specific due date each — separate from the
 // monthly fixed/variable expenses above, and NOT folded into totalExpense or
@@ -285,6 +316,7 @@ function computeSnapshot(data) {
   const fixedTotal = fGroups.reduce((s, g) => s + g.value, 0);
   const variableTotal = vGroups.reduce((s, g) => s + g.value, 0);
   const totalExpense = fixedTotal + variableTotal;
+  const incomeTotal = sumGroupsValue(getIncomeGroupsForMonth(data, MONTH_KEY));
   const items = [
     ...(data.fixedGroups || DEFAULT_FIXED_EXPENSE_GROUPS).flatMap((g) => g.items),
     ...(data.variableGroups || DEFAULT_VARIABLE_EXPENSE_GROUPS).flatMap((g) => g.items),
@@ -293,9 +325,23 @@ function computeSnapshot(data) {
   const paidCount = items.filter((it) => monthPaid[it.id]).length;
   return {
     netWorth: totalAssets - totalLiab, totalAssets, totalLiab,
-    income: INCOME.total, totalExpense, fixedTotal, variableTotal, netCashflow: INCOME.total - totalExpense,
+    income: incomeTotal, totalExpense, fixedTotal, variableTotal, netCashflow: incomeTotal - totalExpense,
     paidCount, totalItems: items.length,
   };
+}
+
+// For a specific month key, prefer the actual frozen historical totals (if a
+// snapshot was saved during that month) since fixed/variable items may have
+// been edited since; otherwise fall back to the currently active recurring
+// totals (used for months with no snapshot yet — e.g. months in the future,
+// or before any data was ever saved). Used by the annual overview table.
+function getExpenseTotalsForMonth(data, monthKey, fallbackFixedTotal, fallbackVariableTotal) {
+  const hist = (data && data.history) || {};
+  const snap = hist[monthKey];
+  if (snap && typeof snap.totalExpense === "number") {
+    return { fixedTotal: snap.fixedTotal || 0, variableTotal: snap.variableTotal || 0, totalExpense: snap.totalExpense || 0 };
+  }
+  return { fixedTotal: fallbackFixedTotal, variableTotal: fallbackVariableTotal, totalExpense: fallbackFixedTotal + fallbackVariableTotal };
 }
 
 // One-time migration: if a section has never been saved before (its key is
@@ -312,6 +358,7 @@ function seedMissingDefaults(data) {
   if (!seeded.fixedGroups) { seeded.fixedGroups = DEFAULT_FIXED_EXPENSE_GROUPS; changed = true; }
   if (!seeded.variableGroups) { seeded.variableGroups = DEFAULT_VARIABLE_EXPENSE_GROUPS; changed = true; }
   if (!seeded.annualBills) { seeded.annualBills = DEFAULT_ANNUAL_BILLS; changed = true; }
+  if (!seeded.income) { seeded.income = { [MONTH_KEY]: defaultIncomeGroups() }; changed = true; }
   return { seeded, changed };
 }
 
@@ -514,6 +561,137 @@ function GroupList({ groups, total, checkable = false, paid = {}, onToggle, show
         </div>
         );
       })}
+    </div>
+  );
+}
+
+const annualTh = { textAlign: "right", padding: "8px 6px", color: "#6B6459", fontWeight: 600, whiteSpace: "nowrap", borderBottom: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5 };
+const annualTd = { textAlign: "right", padding: "7px 6px", whiteSpace: "nowrap", borderBottom: "1px solid #F0EBDD", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5 };
+
+// Read-only, year-at-a-glance table: one row per month (income vs recurring
+// expense totals), with prev/next year navigation and a click-to-expand
+// itemized detail panel per month (income items are historically accurate
+// per month; expense items shown are the current recurring set, since the
+// app doesn't keep an item-level expense history — only aggregate totals).
+// Clicking the รายรับ / รายจ่ายคงที่ / รายจ่ายผันแปร cell of any row opens a
+// detail panel scoped to just that one category (not the whole row), so the
+// person can jump straight to what they want to inspect.
+const annualCellClickable = { cursor: "pointer" };
+function AnnualIncomeExpenseTable({ allData, fixedGroupsDisplay, variableGroupsDisplay, fixedTotal, variableTotal }) {
+  const [year, setYear] = useState(CURRENT_BE_YEAR);
+  const [openDetail, setOpenDetail] = useState(null); // { key: monthKey, type: "income" | "fixed" | "variable" }
+
+  const rows = Array.from({ length: 12 }, (_, i) => {
+    const mm = String(i + 1).padStart(2, "0");
+    const key = `${year}-${mm}`;
+    const incomeGroups = getIncomeGroupsForMonth(allData, key);
+    const incomeTotal = sumGroupsValue(incomeGroups);
+    const exp = getExpenseTotalsForMonth(allData, key, fixedTotal, variableTotal);
+    return {
+      key, label: THAI_MONTHS_ABBR[i], incomeGroups, incomeTotal,
+      fixedTotal: exp.fixedTotal, variableTotal: exp.variableTotal, totalExpense: exp.totalExpense,
+      net: incomeTotal - exp.totalExpense, isCurrent: key === MONTH_KEY,
+    };
+  });
+  const yearTotals = rows.reduce((acc, r) => ({
+    income: acc.income + r.incomeTotal, totalExpense: acc.totalExpense + r.totalExpense, net: acc.net + r.net,
+  }), { income: 0, totalExpense: 0, net: 0 });
+  const openRow = openDetail ? rows.find((r) => r.key === openDetail.key) : null;
+
+  const toggleDetail = (key, type) => {
+    setOpenDetail((prev) => (prev && prev.key === key && prev.type === type) ? null : { key, type });
+  };
+  const cellBg = (key, type) => (openDetail && openDetail.key === key && openDetail.type === type) ? "#FBF3DE" : undefined;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, marginBottom: 12 }}>
+        <button onClick={() => { setYear((y) => y - 1); setOpenDetail(null); }} title="ปีก่อนหน้า"
+          style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459", cursor: "pointer", fontSize: 14 }}>‹</button>
+        <span style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 15, color: "#202B29", minWidth: 60, textAlign: "center" }}>ปี {year}</span>
+        <button onClick={() => { setYear((y) => y + 1); setOpenDetail(null); }} title="ปีถัดไป"
+          style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459", cursor: "pointer", fontSize: 14 }}>›</button>
+      </div>
+
+      <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#A79E8E", marginBottom: 6, textAlign: "center" }}>
+        แตะตัวเลขในช่อง "รายรับ" "รายจ่ายคงที่" หรือ "รายจ่ายผันแปร" ของเดือนไหนก็ได้ เพื่อดูรายละเอียดว่ามีรายการอะไรบ้าง
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#F6F3EC" }}>
+              <th style={{ ...annualTh, textAlign: "left" }}>เดือน</th>
+              <th style={annualTh}>รายรับ</th>
+              <th style={annualTh}>รายจ่ายคงที่</th>
+              <th style={annualTh}>รายจ่ายผันแปร</th>
+              <th style={annualTh}>รายจ่ายรวม</th>
+              <th style={annualTh}>คงเหลือสุทธิ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key} style={{ background: r.isCurrent ? "#F1F6F2" : "transparent" }}>
+                <td style={{ ...annualTd, textAlign: "left", fontWeight: r.isCurrent ? 700 : 600, color: "#202B29" }}>{r.label}{r.isCurrent ? " ·" : ""}</td>
+                <td onClick={() => toggleDetail(r.key, "income")} title="ดูรายละเอียดรายรับ"
+                  style={{ ...annualTd, ...annualCellClickable, color: "#1F6E6B", background: cellBg(r.key, "income") }}>{fmt(r.incomeTotal)}</td>
+                <td onClick={() => toggleDetail(r.key, "fixed")} title="ดูรายละเอียดรายจ่ายคงที่"
+                  style={{ ...annualTd, ...annualCellClickable, background: cellBg(r.key, "fixed") }}>{fmt(r.fixedTotal)}</td>
+                <td onClick={() => toggleDetail(r.key, "variable")} title="ดูรายละเอียดรายจ่ายผันแปร"
+                  style={{ ...annualTd, ...annualCellClickable, background: cellBg(r.key, "variable") }}>{fmt(r.variableTotal)}</td>
+                <td style={{ ...annualTd, color: "#8A5A2B" }}>{fmt(r.totalExpense)}</td>
+                <td style={{ ...annualTd, fontWeight: 700, color: r.net >= 0 ? "#202B29" : "#7A2E1F" }}>{fmt(r.net)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr style={{ background: "#FBF7EC" }}>
+              <td style={{ ...annualTd, textAlign: "left", fontWeight: 700 }}>รวมทั้งปี</td>
+              <td style={{ ...annualTd, fontWeight: 700, color: "#1F6E6B" }}>{fmt(yearTotals.income)}</td>
+              <td style={annualTd}></td>
+              <td style={annualTd}></td>
+              <td style={{ ...annualTd, fontWeight: 700, color: "#8A5A2B" }}>{fmt(yearTotals.totalExpense)}</td>
+              <td style={{ ...annualTd, fontWeight: 700, color: yearTotals.net >= 0 ? "#202B29" : "#7A2E1F" }}>{fmt(yearTotals.net)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      {openRow && openDetail && (
+        <div style={{ marginTop: 12, border: "1px solid #E6E0D2", borderRadius: 12, padding: 14 }}>
+          {openDetail.type === "income" && (
+            <div>
+              <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 12.5, color: "#1F6E6B", marginBottom: 10 }}>
+                รายรับ · {openRow.label} {year} · {fmt(openRow.incomeTotal)}
+              </div>
+              <CompositionBar groups={withTotals(openRow.incomeGroups)} total={openRow.incomeTotal} />
+              <GroupList groups={withTotals(openRow.incomeGroups)} total={openRow.incomeTotal} />
+            </div>
+          )}
+          {openDetail.type === "fixed" && (
+            <div>
+              <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 12.5, color: "#8A5A2B", marginBottom: 10 }}>
+                รายจ่ายคงที่ (ชุดปัจจุบัน) · {openRow.label} {year} · {fmt(fixedTotal)}
+              </div>
+              <GroupList groups={fixedGroupsDisplay} total={fixedTotal} />
+              <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#A79E8E", marginTop: 4 }}>
+                รายการด้านบนคือชุดปัจจุบันที่ตั้งไว้ (ระบบไม่ได้เก็บประวัติการแก้ไขของแต่ละรายการย้อนหลัง) ส่วนยอด "รายจ่ายคงที่" ของเดือนที่ผ่านมาแล้วในตารางจะดึงจากยอดจริงที่บันทึกไว้ตอนนั้น จึงอาจไม่ตรงกับยอดรวมของรายการชุดปัจจุบันเป๊ะ ๆ หากมีการแก้ไขรายการภายหลัง
+              </div>
+            </div>
+          )}
+          {openDetail.type === "variable" && (
+            <div>
+              <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 700, fontSize: 12.5, color: "#8A5A2B", marginBottom: 10 }}>
+                รายจ่ายผันแปร (ชุดปัจจุบัน) · {openRow.label} {year} · {fmt(variableTotal)}
+              </div>
+              <GroupList groups={variableGroupsDisplay} total={variableTotal} />
+              <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#A79E8E", marginTop: 4 }}>
+                รายการด้านบนคือชุดปัจจุบันที่ตั้งไว้ (ระบบไม่ได้เก็บประวัติการแก้ไขของแต่ละรายการย้อนหลัง) ส่วนยอด "รายจ่ายผันแปร" ของเดือนที่ผ่านมาแล้วในตารางจะดึงจากยอดจริงที่บันทึกไว้ตอนนั้น จึงอาจไม่ตรงกับยอดรวมของรายการชุดปัจจุบันเป๊ะ ๆ หากมีการแก้ไขรายการภายหลัง
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -857,6 +1035,7 @@ function Dashboard() {
   //   allData.liabilityGroups-> saved liability groups (once edited)
   //   allData.fixedGroups    -> saved fixed-expense groups (once edited/added/removed)
   //   allData.variableGroups -> saved variable-expense groups (once edited/added/removed)
+  //   allData.income          -> { "2569-07": [ {id,name,value}, ... ], ... } — รายรับตั้งค่าได้เองรายเดือน
   //   allData.history        -> { "2569-07": {netWorth, totalAssets, ...}, ... } — a frozen
   //                              month-end-ish snapshot per month, kept for the last 12 months
   //   allData.lastUpdated    -> ISO timestamp of the last edit or checkbox tick
@@ -874,6 +1053,9 @@ function Dashboard() {
   const [variableDraft, setVariableDraft] = useState(null);
   const [editingAnnual, setEditingAnnual] = useState(false);
   const [annualDraft, setAnnualDraft] = useState(null);
+  const [editingIncome, setEditingIncome] = useState(false);
+  const [incomeDraft, setIncomeDraft] = useState(null);
+  const [incomeViewMode, setIncomeViewMode] = useState("current"); // "current" | "next" | "year"
 
   useEffect(() => {
     let mounted = true;
@@ -960,11 +1142,28 @@ function Dashboard() {
   const fixedTotal = displayFixedGroups.reduce((s, g) => s + g.value, 0);
   const variableTotal = displayVariableGroups.reduce((s, g) => s + g.value, 0);
   const totalExpense = fixedTotal + variableTotal;
-  const netCashflow = INCOME.total - totalExpense;
   const expenseSplit = [
     { key: "fixed", label: "รายจ่ายคงที่", value: fixedTotal, color: "#8A5A2B" },
     { key: "variable", label: "รายจ่ายผันแปร", value: variableTotal, color: "#D9AF78" },
   ];
+
+  // ---- income (set per-month by the person; carries forward from the most
+  // recent previously-saved month as a starting default for unset months;
+  // supports multiple categories, same as fixed/variable expenses) ----
+  const incomeGroupsCurrentSaved = getIncomeGroupsForMonth(allData, MONTH_KEY);
+  const incomeGroupsNextSaved = getIncomeGroupsForMonth(allData, NEXT_MONTH_KEY);
+  const incomeGroupsCurrentT = withTotals(incomeGroupsCurrentSaved);
+  const incomeGroupsNextT = withTotals(incomeGroupsNextSaved);
+  const displayIncomeGroupsCurrent = (editingIncome && incomeViewMode === "current") ? liveGroups(incomeGroupsCurrentT, true, incomeDraft) : incomeGroupsCurrentT;
+  const displayIncomeGroupsNext = (editingIncome && incomeViewMode === "next") ? liveGroups(incomeGroupsNextT, true, incomeDraft) : incomeGroupsNextT;
+  const incomeTotalCurrent = displayIncomeGroupsCurrent.reduce((s, g) => s + g.value, 0);
+  const incomeTotalNext = displayIncomeGroupsNext.reduce((s, g) => s + g.value, 0);
+  const incomeMonthKey = incomeViewMode === "next" ? NEXT_MONTH_KEY : MONTH_KEY;
+  const incomeMonthLabel = incomeViewMode === "next" ? NEXT_MONTH_FULL : CURRENT_MONTH_FULL;
+  const displayIncomeGroupsForView = incomeViewMode === "next" ? displayIncomeGroupsNext : displayIncomeGroupsCurrent;
+  const incomeTotalForView = incomeViewMode === "next" ? incomeTotalNext : incomeTotalCurrent;
+
+  const netCashflow = incomeTotalCurrent - totalExpense;
 
   // Checklist always reflects the saved (non-draft) item set.
   const checklistItems = [...fixedGroups.flatMap((g) => g.items), ...variableGroups.flatMap((g) => g.items)];
@@ -981,7 +1180,7 @@ function Dashboard() {
   // Merge saved history with a live snapshot of the current month (so the
   // trend chart always reflects "right now" even before the first save).
   const historyRecord = { ...(allData.history || {}) };
-  historyRecord[MONTH_KEY] = { netWorth, totalAssets, totalLiab, income: INCOME.total, totalExpense, fixedTotal, variableTotal, netCashflow, paidCount, totalItems: checklistItems.length };
+  historyRecord[MONTH_KEY] = { netWorth, totalAssets, totalLiab, income: incomeTotalCurrent, totalExpense, fixedTotal, variableTotal, netCashflow, paidCount, totalItems: checklistItems.length };
   const historyList = Object.keys(historyRecord).sort().slice(-12).map((k) => ({ key: k, ...historyRecord[k] }));
 
   // Annual bills: kept separate from totalExpense/netCashflow on purpose (a
@@ -1086,6 +1285,37 @@ function Dashboard() {
     setEditingAnnual(false); setAnnualDraft(null);
   };
 
+  // ---- income (name, amount; add / remove / reorder items, plus manage
+  // whole categories — same as fixed/variable expenses) — scoped to whichever
+  // month tab (this month / next month) is currently selected ----
+  const startEditIncome = () => {
+    const groups = incomeViewMode === "next" ? incomeGroupsNextSaved : incomeGroupsCurrentSaved;
+    setIncomeDraft(cloneAsDraft(groups));
+    setEditingIncome(true);
+  };
+  const updateIncomeName = (gk, id, name) => setIncomeDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, name } : it) }));
+  const updateIncomeValue = (gk, id, value) => setIncomeDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.map((it) => it.id === id ? { ...it, value } : it) }));
+  const addIncomeItem = (gk) => setIncomeDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: [...g.items, { id: makeId(), name: "", value: "0" }] }));
+  const removeIncomeItem = (gk, id) => setIncomeDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, items: g.items.filter((it) => it.id !== id) }));
+  const reorderIncomeItem = (gk, draggedId, targetId) => setIncomeDraft((prev) => reorderItemInGroups(prev, gk, draggedId, targetId));
+  const renameIncomeGroup = (gk, label) => setIncomeDraft((prev) => prev.map((g) => g.key !== gk ? g : { ...g, label }));
+  const addIncomeGroup = () => setIncomeDraft((prev) => [...prev, { key: makeGroupId(), label: "", color: NEW_CATEGORY_COLORS[prev.length % NEW_CATEGORY_COLORS.length], items: [] }]);
+  const removeIncomeGroup = (gk) => setIncomeDraft((prev) => prev.filter((g) => g.key !== gk));
+  const cancelEditIncome = () => { setEditingIncome(false); setIncomeDraft(null); };
+  const saveEditIncome = () => {
+    const finalGroups = incomeDraft.map((g) => ({ ...g, label: (g.label || "").trim() || "หมวดใหม่", items: g.items.map((it) => ({ id: it.id, name: (it.name || "").trim() || "รายการใหม่", value: parseNum(it.value, 0) })) }));
+    const nextIncomeStore = { ...(allData.income || {}), [incomeMonthKey]: finalGroups };
+    persist({ ...allData, income: nextIncomeStore });
+    setEditingIncome(false); setIncomeDraft(null);
+  };
+  // Switching the view tab mid-edit would either apply the draft to the
+  // wrong month or silently discard unsaved changes, so the tab buttons stay
+  // disabled while editing (see JSX below) — this is just a safety net.
+  const switchIncomeView = (mode) => {
+    if (editingIncome) return;
+    setIncomeViewMode(mode);
+  };
+
   const lastUpdatedLabel = allData.lastUpdated ? formatThaiDateTime(new Date(allData.lastUpdated)) : "ยังไม่มีการอัปเดตข้อมูล";
   const liquidGroup = displayAssetGroups.find((g) => g.key === "liquid") || displayAssetGroups[0];
 
@@ -1097,6 +1327,14 @@ function Dashboard() {
   const isDesktop = viewportWidth >= 1024;
   const containerMaxWidth = isDesktop ? 1040 : isTablet ? 640 : 480;
   const pairGridStyle = isDesktop ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "start" } : {};
+  const monthTabStyle = (active, disabled) => ({
+    padding: "7px 14px", borderRadius: 999, cursor: disabled ? "not-allowed" : "pointer",
+    fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600,
+    border: active ? "1.5px solid #1F6E6B" : "1px solid #E6E0D2",
+    background: active ? "#E7F2F0" : "#FFFFFF",
+    color: active ? "#1F6E6B" : "#6B6459",
+    opacity: disabled ? 0.45 : 1,
+  });
 
   return (
     <div style={{ minHeight: "100vh", background: "#F6F3EC", padding: isDesktop ? "36px 28px 60px" : isTablet ? "32px 20px 60px" : "28px 16px 60px", display: "flex", justifyContent: "center" }}>
@@ -1147,9 +1385,9 @@ function Dashboard() {
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: isTablet ? "repeat(4, 1fr)" : "1fr 1fr", gap: 10, marginBottom: 24 }}>
-          <StatCard label={`รายรับ ${CURRENT_MONTH_ABBR}`} value={fmt(INCOME.total)} color="#1F6E6B" />
+          <StatCard label={`รายรับ ${CURRENT_MONTH_ABBR}`} value={fmt(incomeTotalCurrent)} color="#1F6E6B" />
           <StatCard label={`รายจ่าย ${CURRENT_MONTH_ABBR}`} value={fmt(totalExpense)} sub={`คงที่ ${fmt(fixedTotal)} + ผันแปร ${fmt(variableTotal)}`} color="#8A5A2B" />
-          <StatCard label="คงเหลือสุทธิเดือนนี้" value={fmt(netCashflow)} sub={netCashflow >= 0 ? `อัตราการออม ${pct(netCashflow, INCOME.total)}` : "รายจ่ายสูงกว่ารายรับเดือนนี้"} color={netCashflow >= 0 ? "#202B29" : "#7A2E1F"} />
+          <StatCard label="คงเหลือสุทธิเดือนนี้" value={fmt(netCashflow)} sub={netCashflow >= 0 ? `อัตราการออม ${pct(netCashflow, incomeTotalCurrent)}` : "รายจ่ายสูงกว่ารายรับเดือนนี้"} color={netCashflow >= 0 ? "#202B29" : "#7A2E1F"} />
           <StatCard label="สินทรัพย์สภาพคล่อง" value={fmt(liquidGroup ? liquidGroup.value : 0)} sub="เงินสด/บัญชีออมทรัพย์" color="#202B29" />
         </div>
 
@@ -1186,36 +1424,74 @@ function Dashboard() {
         </div>
 
         <div style={{ marginBottom: 24 }}>
-          <SectionTitle eyebrow={`กระแสเงินสด · ${CURRENT_MONTH_FULL}`} title="รายรับ vs รายจ่าย" />
-          <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16 }}>
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, marginBottom: 5 }}>
-                <span style={{ color: "#1F6E6B", fontWeight: 600 }}>รายรับ</span>
-                <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(INCOME.total)}</span>
-              </div>
-              <div style={{ width: "100%", height: 12, borderRadius: 999, background: "#EDE8DC" }}>
-                <div style={{ width: "100%", height: "100%", borderRadius: 999, background: "#1F6E6B" }} />
-              </div>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <SectionTitle eyebrow={incomeViewMode === "year" ? "รายรับ & กระแสเงินสด · ภาพรวมรายปี" : `รายรับ & กระแสเงินสด · ${incomeMonthLabel}`} title="รายรับ vs รายจ่าย" />
+            <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
+              <button onClick={() => switchIncomeView("current")} disabled={editingIncome} style={monthTabStyle(incomeViewMode === "current", editingIncome)}>เดือนนี้</button>
+              <button onClick={() => switchIncomeView("next")} disabled={editingIncome} style={monthTabStyle(incomeViewMode === "next", editingIncome)}>เดือนหน้า</button>
+              <button onClick={() => switchIncomeView("year")} disabled={editingIncome} style={monthTabStyle(incomeViewMode === "year", editingIncome)}>รายปี</button>
             </div>
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, marginBottom: 5 }}>
-                <span style={{ color: "#8A5A2B", fontWeight: 600 }}>รายจ่าย</span>
-                <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(totalExpense)}</span>
-              </div>
-              <div style={{ width: "100%", height: 12, borderRadius: 999, background: "#EDE8DC" }}>
-                <div style={{ width: `${Math.min((totalExpense / INCOME.total) * 100, 100)}%`, height: "100%", borderRadius: 999, background: "#8A5A2B" }} />
-              </div>
-            </div>
-            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E6E0D2", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459" }}>คงเหลือสุทธิ</span>
-              <span style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 20, color: netCashflow >= 0 ? "#202B29" : "#7A2E1F" }}>{fmt(netCashflow)}</span>
-            </div>
-            {netCashflow < 0 && (
-              <div style={{ marginTop: 6, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#7A2E1F" }}>
-                รายจ่ายรวมสูงกว่ารายรับ {fmt(Math.abs(netCashflow))} บาทในเดือนนี้
-              </div>
-            )}
           </div>
+          {editingIncome && <div style={{ ...hintStyle, marginTop: -4, marginBottom: 10 }}>กด "บันทึก" หรือ "ยกเลิก" การแก้ไขรายรับก่อน จึงจะสลับไปดูเดือนอื่นหรือภาพรวมรายปีได้ (กันข้อมูลที่พิมพ์ไว้หายโดยไม่ตั้งใจ)</div>}
+
+          {incomeViewMode === "year" ? (
+            <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16 }}>
+              <AnnualIncomeExpenseTable allData={allData} fixedGroupsDisplay={displayFixedGroups} variableGroupsDisplay={displayVariableGroups} fixedTotal={fixedTotal} variableTotal={variableTotal} />
+            </div>
+          ) : (
+            <React.Fragment>
+              <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16, marginBottom: 14 }}>
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, marginBottom: 5 }}>
+                    <span style={{ color: "#1F6E6B", fontWeight: 600 }}>รายรับ</span>
+                    <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(incomeTotalForView)}</span>
+                  </div>
+                  <div style={{ width: "100%", height: 12, borderRadius: 999, background: "#EDE8DC" }}>
+                    <div style={{ width: "100%", height: "100%", borderRadius: 999, background: "#1F6E6B" }} />
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, marginBottom: 5 }}>
+                    <span style={{ color: "#8A5A2B", fontWeight: 600 }}>รายจ่าย (ประมาณการซ้ำทุกเดือน)</span>
+                    <span style={{ fontWeight: 700, color: "#202B29" }}>{fmt(totalExpense)}</span>
+                  </div>
+                  <div style={{ width: "100%", height: 12, borderRadius: 999, background: "#EDE8DC" }}>
+                    <div style={{ width: `${incomeTotalForView ? Math.min((totalExpense / incomeTotalForView) * 100, 100) : 0}%`, height: "100%", borderRadius: 999, background: "#8A5A2B" }} />
+                  </div>
+                </div>
+                <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E6E0D2", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459" }}>คงเหลือสุทธิ</span>
+                  <span style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 20, color: (incomeTotalForView - totalExpense) >= 0 ? "#202B29" : "#7A2E1F" }}>{fmt(incomeTotalForView - totalExpense)}</span>
+                </div>
+                {(incomeTotalForView - totalExpense) < 0 && (
+                  <div style={{ marginTop: 6, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#7A2E1F" }}>
+                    รายจ่ายรวมสูงกว่ารายรับ {fmt(Math.abs(incomeTotalForView - totalExpense))} บาทใน{incomeMonthLabel}
+                  </div>
+                )}
+                <div style={{ marginTop: 10, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#A79E8E" }}>
+                  รายจ่ายคงที่/ผันแปรเป็นรายการที่ตั้งไว้ซ้ำทุกเดือน จึงแสดงยอดเท่ากันทั้งเดือนนี้และเดือนหน้า จนกว่าจะแก้ไขรายการในหมวดรายจ่ายด้านล่าง
+                </div>
+              </div>
+
+              <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, gap: 10 }}>
+                  <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#1F6E6B" }}>รายรับ · {incomeMonthLabel}</span>
+                  <EditToggle editing={editingIncome} onStart={startEditIncome} onSave={saveEditIncome} onCancel={cancelEditIncome} startLabel="แก้ไขรายรับ" />
+                </div>
+                {editingIncome ? (
+                  <GroupEditor groups={incomeDraft} onChangeValue={updateIncomeValue} onChangeName={updateIncomeName} onAddItem={addIncomeItem} onRemoveItem={removeIncomeItem}
+                    allowCategoryManagement onRenameGroup={renameIncomeGroup} onAddGroup={addIncomeGroup} onRemoveGroup={removeIncomeGroup}
+                    allowReorder onReorderItem={reorderIncomeItem} />
+                ) : (
+                  <React.Fragment>
+                    <CompositionBar groups={displayIncomeGroupsForView} total={incomeTotalForView} />
+                    <GroupList groups={displayIncomeGroupsForView} total={incomeTotalForView} />
+                  </React.Fragment>
+                )}
+                {editingIncome && <div style={hintStyle}>เพิ่ม/ลบรายการหรือทั้งหมวดหมู่ แก้ชื่อและยอดเงินได้ แล้วกด "บันทึก" — ยอดนี้จะถูกบันทึกแยกไว้เฉพาะ{incomeMonthLabel} เดือนอื่นจะไม่ถูกเปลี่ยนตาม</div>}
+              </div>
+            </React.Fragment>
+          )}
         </div>
 
         <div style={{ marginBottom: 8 }}>
@@ -1252,7 +1528,7 @@ function Dashboard() {
           <div style={pairGridStyle}>
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
-                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายคงที่</span>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายคงที่ · {incomeMonthLabel}</span>
                 <EditToggle editing={editingFixed} onStart={startEditFixed} onSave={saveEditFixed} onCancel={cancelEditFixed} startLabel="แก้ไขรายการ" />
               </div>
               {editingFixed ? (
@@ -1267,7 +1543,7 @@ function Dashboard() {
 
             <div style={{ marginTop: isDesktop ? 0 : 20 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 2 }}>
-                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายผันแปร</span>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: 600, color: "#8A5A2B" }}>รายจ่ายผันแปร · {incomeMonthLabel}</span>
                 <EditToggle editing={editingVariable} onStart={startEditVariable} onSave={saveEditVariable} onCancel={cancelEditVariable} startLabel="แก้ไขรายการ" />
               </div>
               {editingVariable ? (
@@ -1296,7 +1572,7 @@ function Dashboard() {
         </div>
 
         <div style={{ marginTop: 18, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน รายจ่าย หรือรายจ่ายประจำปี เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ ในหมวดสินทรัพย์และหนี้สิน มีไอคอน ⠿ ให้ลาก (drag) จัดเรียงลำดับรายการเองได้ด้วย ในหมวดรายจ่ายคงที่/ผันแปร ใส่วันที่ครบกำหนดของทุกเดือน (1-31) ได้ต่อรายการ รายการที่มีวันที่จะเรียงขึ้นก่อนตามความใกล้ถึงกำหนด แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) แบนเนอร์แจ้งเตือนด้านบนสุดของหน้าจะขึ้นล่วงหน้า 1 วันก่อนถึงกำหนดเสมอ — รายจ่ายรายเดือนที่ยังไม่ติ๊กจะแจ้งต่อเนื่องจนกว่าจะติ๊กว่าจ่ายแล้ว (ติ๊กแล้วหายทันที) ส่วนรายจ่ายประจำปี/ตามรอบจะแจ้งจนกว่าจะเลยวันครบกำหนดแล้วหยุดเอง (ไม่ถูกรวมเข้าไปในยอดรายจ่ายรายเดือน) สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
+          หมายเหตุ: กด "แก้ไขรายการ" ในหมวดสินทรัพย์ หนี้สิน รายจ่าย หรือรายจ่ายประจำปี เพื่อเพิ่ม/ลบ/เปลี่ยนชื่อและยอดของแต่ละรายการ ในหมวดรายรับ กด "แก้ไขรายรับ" เพื่อตั้งค่ารายรับของแต่ละเดือนเอง แยกเป็นหมวดหมู่ได้เหมือนรายจ่าย (เพิ่ม/ลบทั้งหมวดหมู่ได้ด้วย) — สลับปุ่ม "เดือนนี้ / เดือนหน้า" เพื่อดูหรือตั้งค่ารายรับล่วงหน้าของเดือนถัดไปได้ (ถ้ายังไม่เคยตั้งรายรับของเดือนไหน ระบบจะยกยอดรายรับจากเดือนล่าสุดที่เคยบันทึกมาให้เป็นค่าเริ่มต้น) ระหว่างที่กำลังแก้ไขรายรับอยู่ ปุ่มสลับเดือน/รายปีจะถูกปิดไว้ชั่วคราวเพื่อกันข้อมูลที่พิมพ์ไว้หายโดยไม่ตั้งใจ ต้องกด "บันทึก" หรือ "ยกเลิก" ก่อนจึงจะสลับได้ กดปุ่ม "รายปี" ในจุดเดียวกันเพื่อดูตารางรายรับ-รายจ่ายทั้ง 12 เดือนของปีที่เลือก เลื่อนปีด้วยปุ่ม ‹ › แล้วแตะตัวเลขในช่อง "รายรับ" "รายจ่ายคงที่" หรือ "รายจ่ายผันแปร" ของเดือนไหนก็ได้เพื่อดูรายละเอียดว่ามีรายการอะไรบ้างเฉพาะหมวดนั้น ในหมวดสินทรัพย์และหนี้สิน มีไอคอน ⠿ ให้ลาก (drag) จัดเรียงลำดับรายการเองได้ด้วย ในหมวดรายจ่ายคงที่/ผันแปร ใส่วันที่ครบกำหนดของทุกเดือน (1-31) ได้ต่อรายการ รายการที่มีวันที่จะเรียงขึ้นก่อนตามความใกล้ถึงกำหนด แตะรายการในเช็คลิสต์เพื่อติ๊กว่าจ่ายแล้ว เช็คลิสต์จะรีเซ็ตเองอัตโนมัติทุกวันที่ 1 ของเดือนใหม่ "ข้อมูลล่าสุด" ด้านบนจะอัปเดตทุกครั้งที่มีการแก้ไขยอดเงินหรือติ๊ก/ยกเลิกติ๊ก ทุกครั้งที่มีการบันทึกข้อมูล ระบบจะเก็บภาพรวมของเดือนนั้นไว้ในกราฟ "เปรียบเทียบข้อมูลรายเดือน" โดยอัตโนมัติ (เก็บย้อนหลังสูงสุด 12 เดือน แตะแท็บด้านบนกราฟเพื่อสลับดูความมั่งคั่งสุทธิ สินทรัพย์รวม หนี้สินรวม รายรับ รายจ่าย หรือคงเหลือสุทธิต่อเดือน แล้วแตะแท่งกราฟเพื่อดูรายละเอียดของเดือนนั้น) แบนเนอร์แจ้งเตือนด้านบนสุดของหน้าจะขึ้นล่วงหน้า 1 วันก่อนถึงกำหนดเสมอ — รายจ่ายรายเดือนที่ยังไม่ติ๊กจะแจ้งต่อเนื่องจนกว่าจะติ๊กว่าจ่ายแล้ว (ติ๊กแล้วหายทันที) ส่วนรายจ่ายประจำปี/ตามรอบจะแจ้งจนกว่าจะเลยวันครบกำหนดแล้วหยุดเอง (ไม่ถูกรวมเข้าไปในยอดรายจ่ายรายเดือน) สถานะทั้งหมดจะซิงก์ขึ้น Google Drive ของคุณ (ผ่าน Google Apps Script) เปิดเว็บนี้จากอุปกรณ์ไหนก็เห็นข้อมูลเดียวกัน
         </div>
       </div>
     </div>
