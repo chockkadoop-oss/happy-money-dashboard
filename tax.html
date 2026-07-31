@@ -496,25 +496,6 @@ return <NumberField key={f.key} label={f.label} unit={f.unit} value={monthData[f
 );
 }
 
-// สไตล์แท็บชุดเดียวกับที่ใช้บนหน้าภาพรวมการเงิน (index.html): พื้นหลังเรียบ
-// ไม่ sticky, แท็บที่เลือกอยู่เป็นสีเขียวเข้ม #2F5D46 ทึบ ที่เหลือเป็นแบบ outline
-function CrossLink() {
-const vw = useWindowWidth();
-const isTablet = vw >= 640;
-const isDesktop = vw >= 1024;
-const navMax = isDesktop ? 1040 : isTablet ? 640 : 480;
-return (
-<div style={{ width: "100%", display: "flex", justifyContent: "center", padding: isDesktop ? "36px 28px 0" : isTablet ? "32px 20px 0" : "28px 16px 0" }}>
-<div style={{ width: "100%", maxWidth: navMax }}>
-<div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
-<a href="index.html" style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459" }}>ภาพรวมการเงิน</a>
-<span style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, border: "1.5px solid #2F5D46", background: "#2F5D46", color: "#FFFFFF" }}>เตรียมภาษี</span>
-<a href="loan.html" style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459" }}>ผ่อนอสังหา</a>
-</div>
-</div>
-</div>
-);
-}
 
 function App() {
 // taxData IS the whole tax store (its own JSON blob), keyed by year:
@@ -563,7 +544,7 @@ body: JSON.stringify(nextTaxData),
 
 return (
 <div style={{ minHeight: "100vh", background: "#F6F3EC" }}>
-<CrossLink />
+<CrossLink active="tax" />
 <TaxPrep data={taxData} loaded={loaded} syncError={syncError} persist={persist} />
 </div>
 );
