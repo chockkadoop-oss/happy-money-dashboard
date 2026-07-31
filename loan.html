@@ -381,19 +381,6 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
   );
 }
 
-function CrossLink() {
-  const vw = useWindowWidth();
-  const navMax = vw >= 1024 ? 880 : vw >= 640 ? 640 : 480;
-  return (
-    <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#F6F3EC", borderBottom: "1px solid #E6E0D2", display: "flex", justifyContent: "center" }}>
-      <div style={{ width: "100%", maxWidth: navMax, display: "flex", gap: 8, padding: "14px 16px 10px" }}>
-        <a href="index.html" style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459" }}>ภาพรวมการเงิน</a>
-        <a href="tax.html" style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459" }}>เตรียมภาษี</a>
-        <span style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, border: "1.5px solid #7A2E1F", background: "#7A2E1F", color: "#FFFFFF" }}>ผ่อนอสังหา</span>
-      </div>
-    </div>
-  );
-}
 
 function LoanApp() {
   // loans เก็บเป็น "อาร์เรย์ของสัญญาผ่อน" แต่ละตัวมี id เป็นของตัวเอง
@@ -456,7 +443,7 @@ function LoanApp() {
 
   return (
     <div style={{ minHeight: "100vh", background: "#F6F3EC" }}>
-      <CrossLink />
+      <CrossLink active="loan" />
       <div style={{ padding: isDesktop ? "24px 28px 60px" : "20px 16px 60px", display: "flex", justifyContent: "center" }}>
         <div style={{ width: "100%", maxWidth: containerMaxWidth }}>
           <div style={{ marginBottom: 4 }}>
