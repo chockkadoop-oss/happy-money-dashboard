@@ -58,6 +58,19 @@ function addMonthsYM(ym, offset) {
 function calLabel(year, monthIndex0) {
   return `${THAI_MONTHS_ABBR[monthIndex0]} ${year}`;
 }
+// แปลง "เดือน/ปีปฏิทิน" กลับไปเป็น "เลขงวดที่" (นับจากเดือนเริ่มผ่อนของสัญญา
+// เป็นงวดที่ 1) — ใช้ตอนผู้ใช้เลือกเดือน/ปีที่รีไฟแนนซ์ผ่าน input type="month"
+function ymToPeriod(startMonth, targetYM) {
+  const s = (startMonth || "2026-01").split("-").map(Number);
+  const t = (targetYM || startMonth || "2026-01").split("-").map(Number);
+  const diff = (t[0] - s[0]) * 12 + (t[1] - s[1]);
+  return diff + 1;
+}
+// แปลงเลขงวดที่กลับเป็น "เดือน/ปีปฏิทิน" (สำหรับแสดงใน input type="month")
+function periodToYM(startMonth, period) {
+  const { year, monthIndex0 } = addMonthsYM(startMonth, (Number(period) || 1) - 1);
+  return `${year}-${String(monthIndex0 + 1).padStart(2, "0")}`;
+}
 
 // เพดานความปลอดภัย กันตารางยาวไม่รู้จบถ้ายอดชำระตั้งไว้ต่ำเกินจนไม่มีวันหมด
 const MAX_SAFETY_PERIODS = 600; // 50 ปี
@@ -102,6 +115,33 @@ function computeSchedule(loan, rateOverrides, paymentOverrides) {
     if (isFinal) break;
   }
   return { rows, incomplete: balance > 0.5 };
+}
+
+// ผนวกข้อมูล "รอบรีไฟแนนซ์" เข้ากับแต่ละแถวของตาราง: รอบที่ (0 = เงินกู้เดิม,
+// 1,2,... = หลังรีไฟแนนซ์แต่ละครั้งตามลำดับ), งวดที่นับใหม่ภายในรอบนั้น (เริ่ม
+// 1 ใหม่ทุกครั้งที่รีไฟแนนซ์), และธนาคารที่ใช้อยู่ ณ งวดนั้น (ยกยอดจากรอบล่าสุด
+// จนกว่าจะถึงรอบถัดไป) — ไม่กระทบตัวเลขการคำนวณดอกเบี้ย/เงินต้นใด ๆ เป็นแค่
+// ป้ายกำกับสำหรับแสดงผล ดอกเบี้ย/ยอดชำระใหม่หลังรีไฟแนนซ์จริงยังต้องตั้งผ่าน
+// rateOverrides/paymentOverrides ของงวดนั้นแยกต่างหากตามปกติ
+function annotateRefinance(rows, refinances, originalBank) {
+  const sorted = (refinances || [])
+    .map((r) => ({ ...r, period: Math.max(parseInt(r.period, 10) || 1, 1) }))
+    .sort((a, b) => a.period - b.period);
+  return rows.map((r) => {
+    let roundIndex = 0;
+    let roundStart = 1;
+    let bank = originalBank || "";
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].period <= r.period) {
+        roundIndex = i + 1;
+        roundStart = sorted[i].period;
+        bank = sorted[i].bank || "";
+      } else {
+        break;
+      }
+    }
+    return { ...r, refiRoundIndex: roundIndex, refiRoundStart: roundStart, periodInRound: r.period - roundStart + 1, refiBank: bank };
+  });
 }
 
 function groupRowsByYear(rows) {
@@ -157,11 +197,13 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
   const [openYear, setOpenYear] = useState(null);
   const nowYM = todayYM();
 
-  const effectiveLoan = editing && draft ? { ...loan, principal: draft.principal, startMonth: draft.startMonth, maxYears: draft.maxYears } : loan;
+  const effectiveLoan = editing && draft
+    ? { ...loan, principal: draft.principal, startMonth: draft.startMonth, maxYears: draft.maxYears, bank: draft.bank, refinances: draft.refinances }
+    : loan;
   const rateOverrides = editing && draft ? draft.rateOverrides : (loan.rateOverrides || {});
   const paymentOverrides = editing && draft ? draft.paymentOverrides : (loan.paymentOverrides || {});
   const schedule = computeSchedule(effectiveLoan, rateOverrides, paymentOverrides);
-  const rows = schedule.rows;
+  const rows = annotateRefinance(schedule.rows, effectiveLoan.refinances, effectiveLoan.bank);
   const yearGroups = groupRowsByYear(rows);
 
   // หา "งวดปัจจุบัน" — แถวล่าสุดที่เดือน/ปีของงวดถึงหรือผ่านไปแล้วเทียบกับวันนี้
@@ -201,6 +243,8 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
       principal: String(loan.principal || 0),
       startMonth: loan.startMonth || nowYM,
       maxYears: String(loan.maxYears || 30),
+      bank: loan.bank || "",
+      refinances: (loan.refinances || []).map((r) => ({ ...r })),
       rateOverrides: { ...(loan.rateOverrides || {}) },
       paymentOverrides: { ...(loan.paymentOverrides || {}) },
     });
@@ -215,6 +259,10 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
       principal: parseNum(draft.principal, 0),
       startMonth: draft.startMonth || loan.startMonth,
       maxYears: Math.max(parseInt(draft.maxYears, 10) || 30, 1),
+      bank: (draft.bank || "").trim(),
+      refinances: draft.refinances
+        .map((r) => ({ id: r.id, period: Math.max(parseInt(r.period, 10) || 1, 1), bank: (r.bank || "").trim() }))
+        .sort((a, b) => a.period - b.period),
       rateOverrides: draft.rateOverrides,
       paymentOverrides: draft.paymentOverrides,
     });
@@ -223,6 +271,13 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
   const updateDraftField = (field, value) => setDraft((prev) => ({ ...prev, [field]: value }));
   const updateRateOverride = (period, value) => setDraft((prev) => ({ ...prev, rateOverrides: { ...prev.rateOverrides, [String(period)]: value } }));
   const updatePaymentOverride = (period, value) => setDraft((prev) => ({ ...prev, paymentOverrides: { ...prev.paymentOverrides, [String(period)]: value } }));
+  const updateRefinance = (id, field, value) => setDraft((prev) => ({ ...prev, refinances: prev.refinances.map((r) => (r.id === id ? { ...r, [field]: value } : r)) }));
+  const addRefinance = () => setDraft((prev) => {
+    const lastPeriod = prev.refinances.length ? Math.max(...prev.refinances.map((r) => Number(r.period) || 1)) : 1;
+    const suggestedPeriod = lastPeriod + 36; // เดาให้ว่ารีไฟแนนซ์รอบถัดไปห่างจากรอบล่าสุด 3 ปี (ปรับเองได้เสมอ)
+    return { ...prev, refinances: [...prev.refinances, { id: makeId(), period: suggestedPeriod, bank: "" }] };
+  });
+  const removeRefinance = (id) => setDraft((prev) => ({ ...prev, refinances: prev.refinances.filter((r) => r.id !== id) }));
 
   return (
     <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 16, padding: 16, marginBottom: 16 }}>
@@ -239,6 +294,9 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 8 }}>
               <SummaryStat label="ยอดหนี้คงเหลือปัจจุบัน" value={fmt(currentBalance)} color="#7A2E1F" />
               <SummaryStat label="อัตราดอกเบี้ยปัจจุบัน" value={`${currentRate.toFixed(2)}% /ปี`} />
+              {currentRow && (
+                <SummaryStat label="ธนาคารปัจจุบัน" value={currentRow.refiBank || "เจ้าเดิม"} color="#1F6E6B" />
+              )}
               {!finished && nextRow && (
                 <SummaryStat label="งวดถัดไป" value={`${calLabel(nextRow.calYear, nextRow.monthIndex0)} · ${fmt(nextRow.payment)}`} color="#AD8A2E" />
               )}
@@ -266,33 +324,58 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
       </div>
 
       {editing && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginTop: 12, paddingTop: 12, borderTop: "1px dashed #E6E0D2" }}>
-          <div>
-            <span style={labelStyle}>วงเงินกู้ (บาท)</span>
-            <input type="number" inputMode="decimal" value={draft.principal} placeholder="เช่น 3000000"
-              onChange={(e) => updateDraftField("principal", e.target.value)} style={inputStyle} />
+        <React.Fragment>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginTop: 12, paddingTop: 12, borderTop: "1px dashed #E6E0D2" }}>
+            <div>
+              <span style={labelStyle}>วงเงินกู้ (บาท)</span>
+              <input type="number" inputMode="decimal" value={draft.principal} placeholder="เช่น 3000000"
+                onChange={(e) => updateDraftField("principal", e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <span style={labelStyle}>เดือน/ปีที่เริ่มผ่อน (ค.ศ.)</span>
+              <input type="month" value={draft.startMonth} onChange={(e) => updateDraftField("startMonth", e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <span style={labelStyle}>อัตราดอกเบี้ยงวดแรก (% ต่อปี)</span>
+              <input type="number" step="0.01" inputMode="decimal" placeholder="เช่น 3.5"
+                value={draft.rateOverrides["1"] !== undefined ? draft.rateOverrides["1"] : ""}
+                onChange={(e) => updateRateOverride(1, e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <span style={labelStyle}>ยอดชำระงวดแรก (บาท/เดือน)</span>
+              <input type="number" inputMode="decimal" placeholder="เช่น 18700"
+                value={draft.paymentOverrides["1"] !== undefined ? draft.paymentOverrides["1"] : ""}
+                onChange={(e) => updatePaymentOverride(1, e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <span style={labelStyle}>ระยะเวลาผ่อนสูงสุด (ปี)</span>
+              <input type="number" min="1" max="50" value={draft.maxYears} onChange={(e) => updateDraftField("maxYears", e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <span style={labelStyle}>ธนาคารเดิม (ตอนกู้ครั้งแรก) — ไม่บังคับ</span>
+              <input type="text" value={draft.bank} placeholder="เช่น ธนาคาร A" onChange={(e) => updateDraftField("bank", e.target.value)} style={inputStyle} />
+            </div>
           </div>
-          <div>
-            <span style={labelStyle}>เดือน/ปีที่เริ่มผ่อน (ค.ศ.)</span>
-            <input type="month" value={draft.startMonth} onChange={(e) => updateDraftField("startMonth", e.target.value)} style={inputStyle} />
+
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed #E6E0D2" }}>
+            <span style={{ ...labelStyle, fontWeight: 600, color: "#202B29", fontSize: 12.5 }}>ประวัติการรีไฟแนนซ์</span>
+            {draft.refinances.length === 0 && (
+              <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#A79E8E", margin: "4px 0 8px" }}>ยังไม่มีการรีไฟแนนซ์ · เพิ่มด้วยปุ่มด้านล่างเมื่อย้ายไปธนาคารใหม่</div>
+            )}
+            {draft.refinances.map((refi, idx) => (
+              <div key={refi.id} style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
+                <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#A79E8E", flexShrink: 0, width: 22 }}>#{idx + 1}</span>
+                <input type="month" value={periodToYM(draft.startMonth, refi.period)}
+                  onChange={(e) => updateRefinance(refi.id, "period", ymToPeriod(draft.startMonth, e.target.value))}
+                  style={{ ...inputStyle, flex: "0 0 150px" }} />
+                <input type="text" value={refi.bank} placeholder="ชื่อธนาคารใหม่" onChange={(e) => updateRefinance(refi.id, "bank", e.target.value)} style={inputStyle} />
+                <button onClick={() => removeRefinance(refi.id)} title="ลบรอบนี้" style={removeBtnStyle}>✕</button>
+              </div>
+            ))}
+            <button onClick={addRefinance} style={{ ...addBtnStyle, width: "100%", textAlign: "center", borderStyle: "solid", borderColor: "#7A2E1F", color: "#7A2E1F" }}>+ เพิ่มรอบรีไฟแนนซ์</button>
+            <div style={hintStyle}>เลือกเดือน/ปีที่รีไฟแนนซ์มีผล — ระบบจะนับงวดในตารางใหม่ตั้งแต่เดือนนั้น แต่ไม่ได้ตั้งดอกเบี้ย/ยอดชำระใหม่ให้อัตโนมัติ อย่าลืมไปแก้ "ดอกเบี้ย %/ปี" กับ "ยอดชำระ" ของงวดนั้นในตารางด้านล่างเองด้วย</div>
           </div>
-          <div>
-            <span style={labelStyle}>อัตราดอกเบี้ยงวดแรก (% ต่อปี)</span>
-            <input type="number" step="0.01" inputMode="decimal" placeholder="เช่น 3.5"
-              value={draft.rateOverrides["1"] !== undefined ? draft.rateOverrides["1"] : ""}
-              onChange={(e) => updateRateOverride(1, e.target.value)} style={inputStyle} />
-          </div>
-          <div>
-            <span style={labelStyle}>ยอดชำระงวดแรก (บาท/เดือน)</span>
-            <input type="number" inputMode="decimal" placeholder="เช่น 18700"
-              value={draft.paymentOverrides["1"] !== undefined ? draft.paymentOverrides["1"] : ""}
-              onChange={(e) => updatePaymentOverride(1, e.target.value)} style={inputStyle} />
-          </div>
-          <div>
-            <span style={labelStyle}>ระยะเวลาผ่อนสูงสุด (ปี)</span>
-            <input type="number" min="1" max="50" value={draft.maxYears} onChange={(e) => updateDraftField("maxYears", e.target.value)} style={inputStyle} />
-          </div>
-        </div>
+        </React.Fragment>
       )}
 
       {schedule.incomplete && (
@@ -329,6 +412,8 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
                         <tr style={{ background: "#F6F3EC" }}>
                           <th style={{ ...tableThStyle, textAlign: "left" }}>งวดที่</th>
                           <th style={{ ...tableThStyle, textAlign: "left" }}>เดือน/ปี</th>
+                          <th style={{ ...tableThStyle, textAlign: "left" }}>รอบ Refinance</th>
+                          <th style={{ ...tableThStyle, textAlign: "left" }}>ธนาคาร</th>
                           <th style={tableThStyle}>ดอกเบี้ย %/ปี</th>
                           <th style={tableThStyle}>ยอดชำระ</th>
                           <th style={tableThStyle}>ชำระเงินต้น</th>
@@ -339,13 +424,23 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
                       <tbody>
                         {g.items.map((r) => {
                           const isCurrent = currentRow && r.period === currentRow.period;
+                          const is3YearMark = r.periodInRound === 36;
+                          const rowBg = isCurrent ? "#FBF3DE" : (is3YearMark ? "#EAF5F4" : "transparent");
+                          const rowAccent = isCurrent ? "#AD8A2E" : (is3YearMark ? "#1F6E6B" : "transparent");
                           return (
-                            <tr key={r.period} style={{ background: isCurrent ? "#FBF3DE" : "transparent", boxShadow: isCurrent ? "inset 3px 0 0 #AD8A2E" : "none" }}>
+                            <tr key={r.period} style={{ background: rowBg, boxShadow: `inset 3px 0 0 ${rowAccent}` }}>
                               <td style={{ ...tableTdStyle, textAlign: "left", fontWeight: isCurrent ? 700 : 400, color: isCurrent ? "#8A6B1E" : "#202B29" }}>
                                 {r.period}
                                 {isCurrent && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#AD8A2E" }}>◄ งวดนี้</span>}
                               </td>
                               <td style={{ ...tableTdStyle, textAlign: "left" }}>{calLabel(r.calYear, r.monthIndex0)}</td>
+                              <td style={{ ...tableTdStyle, textAlign: "left" }}>
+                                {r.refiRoundIndex === 0 ? "เริ่มต้น" : `Refi #${r.refiRoundIndex}`} · งวดที่ {r.periodInRound}
+                                {is3YearMark && (
+                                  <div style={{ fontSize: 10, fontWeight: 700, color: "#1F6E6B", marginTop: 2 }}>🔔 ครบ 3 ปีของรอบนี้</div>
+                                )}
+                              </td>
+                              <td style={{ ...tableTdStyle, textAlign: "left" }}>{r.refiBank || "เจ้าเดิม"}</td>
                               <td style={tableTdStyle}>
                                 {editing ? (
                                   <input type="number" step="0.01" inputMode="decimal"
@@ -381,7 +476,6 @@ function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
     </div>
   );
 }
-
 
 function LoanApp() {
   // loans เก็บเป็น "อาร์เรย์ของสัญญาผ่อน" แต่ละตัวมี id เป็นของตัวเอง
@@ -434,6 +528,7 @@ function LoanApp() {
   const addLoan = () => {
     const newLoan = {
       id: makeId(), name: "รายการผ่อนใหม่", principal: 0, startMonth: todayYM(), maxYears: 30,
+      bank: "", refinances: [],
       rateOverrides: {}, paymentOverrides: {},
     };
     persist([...loans, newLoan]);
@@ -479,7 +574,7 @@ function LoanApp() {
           )}
 
           <div style={{ marginTop: 24, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
-            หมายเหตุ: กด "+ เพิ่มรายการผ่อนใหม่" สำหรับแต่ละสินทรัพย์ที่กำลังผ่อน (เช่น บ้าน คอนโด แยกกันได้) แล้วกด "แก้ไข" เพื่อตั้งวงเงินกู้ เดือน/ปีที่เริ่มผ่อน (ค.ศ.) อัตราดอกเบี้ยและยอดชำระของงวดแรก ระบบจะคำนวณตารางผ่อนแบบลดต้นลดดอกให้อัตโนมัติ (ดอกเบี้ยของแต่ละงวดคิดจากยอดหนี้คงเหลือ ณ ต้นงวด) กด "ดูตารางผ่อน" เพื่อดูตารางแยกเป็นปีๆ แบบพับเก็บได้ แตะปีที่ต้องการเพื่อขยายดูรายละเอียดรายเดือน ระหว่างแก้ไข สามารถปรับอัตราดอกเบี้ยหรือยอดชำระของงวดใดก็ได้โดยตรงในตาราง งวดที่ไม่ได้แก้จะยกยอดค่าจากงวดก่อนหน้าให้อัตโนมัติเสมอ ระบบจะเตือนถ้ายอดชำระต่องวดต่ำเกินไปจนผ่อนไม่หมดภายในระยะเวลาสูงสุดที่ตั้งไว้ ข้อมูลหน้านี้ถูกเก็บแยกไว้ในที่เก็บของตัวเอง (คนละไฟล์กับภาพรวมการเงินและภาษี) แก้หรือพังฝั่งไหนก็ไม่กระทบอีกฝั่ง
+            หมายเหตุ: กด "+ เพิ่มรายการผ่อนใหม่" สำหรับแต่ละสินทรัพย์ที่กำลังผ่อน (เช่น บ้าน คอนโด แยกกันได้) แล้วกด "แก้ไข" เพื่อตั้งวงเงินกู้ เดือน/ปีที่เริ่มผ่อน (ค.ศ.) อัตราดอกเบี้ยและยอดชำระของงวดแรก ระบบจะคำนวณตารางผ่อนแบบลดต้นลดดอกให้อัตโนมัติ (ดอกเบี้ยของแต่ละงวดคิดจากยอดหนี้คงเหลือ ณ ต้นงวด) ในโหมดแก้ไข ยังเพิ่ม "ประวัติการรีไฟแนนซ์" ได้ — ระบุเดือน/ปีที่ย้ายไปธนาคารใหม่แต่ละครั้ง ตารางจะแสดงคอลัมน์ "รอบ Refinance" (นับงวดใหม่ตั้งแต่รอบนั้น) และ "ธนาคาร" ให้อัตโนมัติ พร้อมไฮไลต์งวดที่ครบ 3 ปีของแต่ละรอบเป็นสีฟ้าอมเขียว (เตือนให้พิจารณารีไฟแนนซ์รอบถัดไป) ทั้งนี้การเพิ่มรอบรีไฟแนนซ์ไม่ได้ตั้งดอกเบี้ย/ยอดชำระใหม่ให้อัตโนมัติ ต้องไปแก้ "ดอกเบี้ย %/ปี" กับ "ยอดชำระ" ของงวดนั้นในตารางเองด้วย กด "ดูตารางผ่อน" เพื่อดูตารางแยกเป็นปีๆ แบบพับเก็บได้ แตะปีที่ต้องการเพื่อขยายดูรายละเอียดรายเดือน งวดที่ไม่ได้แก้จะยกยอดค่าดอกเบี้ย/ยอดชำระจากงวดก่อนหน้าให้อัตโนมัติเสมอ ระบบจะเตือนถ้ายอดชำระต่องวดต่ำเกินไปจนผ่อนไม่หมดภายในระยะเวลาสูงสุดที่ตั้งไว้ ข้อมูลหน้านี้ถูกเก็บแยกไว้ในที่เก็บของตัวเอง (คนละไฟล์กับภาพรวมการเงินและภาษี) แก้หรือพังฝั่งไหนก็ไม่กระทบอีกฝั่ง
           </div>
         </div>
       </div>
