@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ผ่อนอสังหา</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+Thai:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #F6F3EC; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const fmt = (n) => "฿" + Math.round(n || 0).toLocaleString("th-TH");
+function parseNum(str, fallback) {
+  if (str === undefined || str === null || str === "") return fallback;
+  const cleaned = String(str).replace(/,/g, "").trim();
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? fallback : n;
+}
+function makeId() {
+  return `loan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const THAI_MONTHS_ABBR = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
+
+// 🔧 ที่เก็บข้อมูล "ผ่อนอสังหา" แยกต่างหากจากทั้งภาพรวมการเงินและภาษี
+// วาง URL ของ Google Apps Script Web App "ตัวที่ 3" (คนละ deployment / คนละ
+// ไฟล์บน Drive จากอีกสองหน้า) ตรงนี้ ปลายทางลงท้ายด้วย /exec
+// ➜ ตราบใดที่ยังไม่วาง ข้อมูลจะถูกเก็บในเบราว์เซอร์เครื่องนี้ (localStorage)
+//   ซึ่งก็แยกจากอีกสองหน้าอยู่แล้ว ไม่ปนกันแน่นอน
+const DRIVE_API_URL = "";
+const DRIVE_CONFIGURED = !!DRIVE_API_URL && DRIVE_API_URL.indexOf("PASTE_YOUR") === -1;
+const LOCAL_FALLBACK_KEY = "happy-money-loan-fallback";
+
+// ---------- date helpers (ปฏิทิน ค.ศ. ใช้ตรงๆ ไม่แปลง พ.ศ. เพราะจะเทียบกับ
+// เอกสารธนาคาร/สัญญากู้ที่ใช้ ค.ศ.) ----------
+function todayYM() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function addMonthsYM(ym, offset) {
+  const parts = (ym || "2026-01").split("-").map(Number);
+  const y = parts[0] || 2026, m = parts[1] || 1;
+  const idx = (m - 1) + offset;
+  const yy = y + Math.floor(idx / 12);
+  const mm = ((idx % 12) + 12) % 12;
+  return { year: yy, monthIndex0: mm };
+}
+function calLabel(year, monthIndex0) {
+  return `${THAI_MONTHS_ABBR[monthIndex0]} ${year}`;
+}
+
+// เพดานความปลอดภัย กันตารางยาวไม่รู้จบถ้ายอดชำระตั้งไว้ต่ำเกินจนไม่มีวันหมด
+const MAX_SAFETY_PERIODS = 600; // 50 ปี
+
+// คำนวณตารางผ่อนแบบ "ลดต้นลดดอก" (เหมือนการผ่อนบ้าน): ดอกเบี้ยของแต่ละงวด
+// คิดจากยอดหนี้คงเหลือ ณ ต้นงวด x (อัตราดอกเบี้ยต่อปี / 12) เงินต้นที่ตัดได้
+// ในงวดนั้น = ยอดชำระ − ดอกเบี้ย แล้วยอดหนี้คงเหลือจะลดลงตามเงินต้นที่ตัดได้
+// อัตราดอกเบี้ยและยอดชำระ "ยกยอดจากงวดก่อนหน้า" เป็นค่าเริ่มต้นเสมอ เว้นแต่งวด
+// นั้นจะมีการปรับเปลี่ยนไว้เอง (rateOverrides / paymentOverrides เป็น sparse
+// map — เก็บเฉพาะงวดที่ถูกแก้ไขจริง คีย์เป็นเลขงวดแบบ string)
+function computeSchedule(loan, rateOverrides, paymentOverrides) {
+  const principal = Number(loan.principal) || 0;
+  const capPeriods = Math.min(Math.max(parseInt(loan.maxYears, 10) || 30, 1) * 12, MAX_SAFETY_PERIODS);
+  const rows = [];
+  let balance = principal;
+  let rate = null;
+  let payment = null;
+  let period = 0;
+  while (balance > 0.5 && period < capPeriods) {
+    period += 1;
+    const key = String(period);
+    const rateOverride = rateOverrides ? rateOverrides[key] : undefined;
+    const paymentOverride = paymentOverrides ? paymentOverrides[key] : undefined;
+    rate = rateOverride !== undefined ? parseNum(rateOverride, rate !== null ? rate : 0) : (rate !== null ? rate : 0);
+    payment = paymentOverride !== undefined ? parseNum(paymentOverride, payment !== null ? payment : 0) : (payment !== null ? payment : 0);
+    const interest = balance * (rate / 100 / 12);
+    let principalPortion = payment - interest;
+    let actualPayment = payment;
+    let isFinal = false;
+    if (principalPortion >= balance) {
+      // งวดสุดท้าย — ตัดพอดีกับยอดคงเหลือ ไม่ให้ชำระเกิน
+      principalPortion = balance;
+      actualPayment = interest + principalPortion;
+      isFinal = true;
+    }
+    const negative = principalPortion < 0; // ยอดชำระไม่พอดอกเบี้ยงวดนี้ (หนี้เพิ่มขึ้น)
+    const newBalance = Math.max(balance - principalPortion, 0);
+    const { year: calYear, monthIndex0 } = addMonthsYM(loan.startMonth, period - 1);
+    const loanYear = Math.floor((period - 1) / 12) + 1;
+    rows.push({ period, loanYear, calYear, monthIndex0, rate, payment: actualPayment, interest, principal: principalPortion, balance: newBalance, negative, isFinal });
+    balance = newBalance;
+    if (isFinal) break;
+  }
+  return { rows, incomplete: balance > 0.5 };
+}
+
+function groupRowsByYear(rows) {
+  const groups = [];
+  let current = null;
+  rows.forEach((r) => {
+    if (!current || current.loanYear !== r.loanYear) {
+      current = { loanYear: r.loanYear, items: [] };
+      groups.push(current);
+    }
+    current.items.push(r);
+  });
+  return groups;
+}
+
+function useWindowWidth() {
+  const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 480);
+  useEffect(() => {
+    const onResize = () => setW(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return w;
+}
+
+// ---------- shared small styles (matching the finance/tax pages) ----------
+const inputStyle = { flex: 1, minWidth: 0, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "7px 9px", color: "#202B29", background: "#FFFDF8" };
+const labelStyle = { fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#6B6459", marginBottom: 4, display: "block" };
+const editBtnStyle = { background: "none", border: "1px solid #C9C2B2", borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", cursor: "pointer", whiteSpace: "nowrap" };
+const saveBtnStyle = { background: "#7A2E1F", border: "1px solid #7A2E1F", borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#fff", cursor: "pointer" };
+const cancelBtnStyle = { background: "none", border: "1px solid #C9C2B2", borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", cursor: "pointer" };
+const removeBtnStyle = { width: 28, height: 28, borderRadius: 7, border: "1px solid #E0A9A0", background: "#FBEDEA", color: "#9A3B2E", cursor: "pointer", fontSize: 13, flexShrink: 0 };
+const addBtnStyle = { marginTop: 8, background: "none", border: "1px dashed #C9C2B2", borderRadius: 7, padding: "8px 10px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459", cursor: "pointer" };
+const hintStyle = { fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#AD8A2E", marginTop: 8 };
+const tableThStyle = { textAlign: "right", padding: "7px 6px", color: "#6B6459", fontWeight: 600, whiteSpace: "nowrap", borderBottom: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11 };
+const tableTdStyle = { textAlign: "right", padding: "6px 6px", whiteSpace: "nowrap", borderBottom: "1px solid #F0EBDD", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12 };
+
+function SummaryStat({ label, value, color }) {
+  return (
+    <div style={{ minWidth: 130 }}>
+      <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#6B6459" }}>{label}</div>
+      <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 15.5, color: color || "#202B29" }}>{value}</div>
+    </div>
+  );
+}
+
+// ---------- Loan card: setup, summary, and the collapsible year-by-year
+// amortization table (reducing-balance / "ลดต้นลดดอก" method) ----------
+function LoanCard({ loan, onSave, onRemove, autoEdit, onAutoEditHandled }) {
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [openYear, setOpenYear] = useState(null);
+  const nowYM = todayYM();
+
+  const effectiveLoan = editing && draft ? { ...loan, principal: draft.principal, startMonth: draft.startMonth, maxYears: draft.maxYears } : loan;
+  const rateOverrides = editing && draft ? draft.rateOverrides : (loan.rateOverrides || {});
+  const paymentOverrides = editing && draft ? draft.paymentOverrides : (loan.paymentOverrides || {});
+  const schedule = computeSchedule(effectiveLoan, rateOverrides, paymentOverrides);
+  const rows = schedule.rows;
+  const yearGroups = groupRowsByYear(rows);
+
+  // หา "งวดปัจจุบัน" — แถวล่าสุดที่เดือน/ปีของงวดถึงหรือผ่านไปแล้วเทียบกับวันนี้
+  // (ถ้ายังไม่ถึงเดือนเริ่มผ่อนเลย จะเป็น null แปลว่ายังไม่เริ่ม — ใช้งวดแรกแทน
+  // เพื่อเปิดปีแรกให้ดูตัวอย่างตารางได้)
+  let currentIdx = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const ym = `${rows[i].calYear}-${String(rows[i].monthIndex0 + 1).padStart(2, "0")}`;
+    if (ym <= nowYM) currentIdx = i; else break;
+  }
+  const currentRow = currentIdx >= 0 ? rows[currentIdx] : null;
+  const nextRow = rows[currentIdx + 1] || null;
+  const currentBalance = currentRow ? currentRow.balance : (Number(effectiveLoan.principal) || 0);
+  const finished = rows.length > 0 && currentRow && currentRow.period === rows[rows.length - 1].period && rows[rows.length - 1].balance <= 0.5;
+  const currentRate = currentRow ? currentRow.rate : (rows[0] ? rows[0].rate : 0);
+  // จุดอ้างอิง "ตอนนี้" สำหรับทั้งไฮไลต์แถวและเปิดปีอัตโนมัติ — ใช้ค่าเดียวกัน
+  // ทั้งสองที่ กันไม่ให้ปีที่เปิดอัตโนมัติกับแถวที่ไฮไลต์อยู่คนละปีกัน
+  const anchorRow = currentRow || (rows.length ? rows[0] : null);
+
+  useEffect(() => {
+    if (expanded && openYear === null && anchorRow) {
+      setOpenYear(anchorRow.loanYear);
+    }
+  }, [expanded, anchorRow ? anchorRow.loanYear : null]);
+
+  useEffect(() => {
+    if (autoEdit && !editing) {
+      startEdit();
+      if (onAutoEditHandled) onAutoEditHandled();
+    }
+    // eslint-disable-next-line
+  }, [autoEdit]);
+
+  const startEdit = () => {
+    setDraft({
+      name: loan.name,
+      principal: String(loan.principal || 0),
+      startMonth: loan.startMonth || nowYM,
+      maxYears: String(loan.maxYears || 30),
+      rateOverrides: { ...(loan.rateOverrides || {}) },
+      paymentOverrides: { ...(loan.paymentOverrides || {}) },
+    });
+    setEditing(true);
+    setExpanded(true);
+  };
+  const cancelEdit = () => { setEditing(false); setDraft(null); };
+  const saveEdit = () => {
+    onSave({
+      ...loan,
+      name: (draft.name || "").trim() || "รายการผ่อน",
+      principal: parseNum(draft.principal, 0),
+      startMonth: draft.startMonth || loan.startMonth,
+      maxYears: Math.max(parseInt(draft.maxYears, 10) || 30, 1),
+      rateOverrides: draft.rateOverrides,
+      paymentOverrides: draft.paymentOverrides,
+    });
+    setEditing(false); setDraft(null);
+  };
+  const updateDraftField = (field, value) => setDraft((prev) => ({ ...prev, [field]: value }));
+  const updateRateOverride = (period, value) => setDraft((prev) => ({ ...prev, rateOverrides: { ...prev.rateOverrides, [String(period)]: value } }));
+  const updatePaymentOverride = (period, value) => setDraft((prev) => ({ ...prev, paymentOverrides: { ...prev.paymentOverrides, [String(period)]: value } }));
+
+  return (
+    <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 16, padding: 16, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          {editing ? (
+            <input type="text" value={draft.name} placeholder="ชื่อรายการ เช่น บ้าน, คอนโด" autoFocus
+              onChange={(e) => updateDraftField("name", e.target.value)}
+              style={{ ...inputStyle, fontWeight: 700, fontSize: 15, marginBottom: 10 }} />
+          ) : (
+            <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 16, color: "#202B29" }}>{loan.name}</div>
+          )}
+          {!editing && rows.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 8 }}>
+              <SummaryStat label="ยอดหนี้คงเหลือปัจจุบัน" value={fmt(currentBalance)} color="#7A2E1F" />
+              <SummaryStat label="อัตราดอกเบี้ยปัจจุบัน" value={`${currentRate.toFixed(2)}% /ปี`} />
+              {!finished && nextRow && (
+                <SummaryStat label="งวดถัดไป" value={`${calLabel(nextRow.calYear, nextRow.monthIndex0)} · ${fmt(nextRow.payment)}`} color="#AD8A2E" />
+              )}
+              {finished && <SummaryStat label="สถานะ" value="ผ่อนครบแล้ว" color="#2F5D46" />}
+            </div>
+          )}
+          {!editing && rows.length === 0 && (
+            <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#A79E8E", marginTop: 6 }}>ยังไม่ได้ตั้งค่าวงเงินกู้/ดอกเบี้ย/ยอดชำระ — กด "แก้ไข" เพื่อเริ่มตั้งค่า</div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          {editing ? (
+            <React.Fragment>
+              <button onClick={saveEdit} style={saveBtnStyle}>บันทึก</button>
+              <button onClick={cancelEdit} style={cancelBtnStyle}>ยกเลิก</button>
+            </React.Fragment>
+          ) : (
+            <React.Fragment>
+              <button onClick={() => setExpanded((v) => !v)} style={editBtnStyle}>{expanded ? "ซ่อนตาราง" : "ดูตารางผ่อน"}</button>
+              <button onClick={startEdit} style={editBtnStyle}>แก้ไข</button>
+              <button onClick={() => onRemove(loan.id)} title="ลบรายการนี้" style={removeBtnStyle}>✕</button>
+            </React.Fragment>
+          )}
+        </div>
+      </div>
+
+      {editing && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginTop: 12, paddingTop: 12, borderTop: "1px dashed #E6E0D2" }}>
+          <div>
+            <span style={labelStyle}>วงเงินกู้ (บาท)</span>
+            <input type="number" inputMode="decimal" value={draft.principal} placeholder="เช่น 3000000"
+              onChange={(e) => updateDraftField("principal", e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <span style={labelStyle}>เดือน/ปีที่เริ่มผ่อน (ค.ศ.)</span>
+            <input type="month" value={draft.startMonth} onChange={(e) => updateDraftField("startMonth", e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <span style={labelStyle}>อัตราดอกเบี้ยงวดแรก (% ต่อปี)</span>
+            <input type="number" step="0.01" inputMode="decimal" placeholder="เช่น 3.5"
+              value={draft.rateOverrides["1"] !== undefined ? draft.rateOverrides["1"] : ""}
+              onChange={(e) => updateRateOverride(1, e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <span style={labelStyle}>ยอดชำระงวดแรก (บาท/เดือน)</span>
+            <input type="number" inputMode="decimal" placeholder="เช่น 18700"
+              value={draft.paymentOverrides["1"] !== undefined ? draft.paymentOverrides["1"] : ""}
+              onChange={(e) => updatePaymentOverride(1, e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <span style={labelStyle}>ระยะเวลาผ่อนสูงสุด (ปี)</span>
+            <input type="number" min="1" max="50" value={draft.maxYears} onChange={(e) => updateDraftField("maxYears", e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+      )}
+
+      {schedule.incomplete && (
+        <div style={{ marginTop: 12, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#7A2E1F", background: "#FBEDEA", border: "1px solid #E0A9A0", borderRadius: 8, padding: 10 }}>
+          ⚠️ ยอดชำระต่องวดอาจไม่พอผ่อนหมดภายใน {effectiveLoan.maxYears || 30} ปีที่ตั้งไว้ (ยังเหลือหนี้ประมาณ {fmt(rows.length ? rows[rows.length - 1].balance : effectiveLoan.principal)}) ลองเพิ่มยอดชำระต่องวด หรือขยายระยะเวลาผ่อนสูงสุด
+        </div>
+      )}
+
+      {(expanded || editing) && rows.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          {yearGroups.map((g) => {
+            const isOpen = openYear === g.loanYear;
+            const yearBalance = g.items[g.items.length - 1].balance;
+            const isCurrentYear = currentRow && currentRow.loanYear === g.loanYear;
+            return (
+              <div key={g.loanYear} style={{ border: isCurrentYear ? "1px solid #E8CE8A" : "1px solid #E6E0D2", borderRadius: 12, marginBottom: 8, overflow: "hidden" }}>
+                <button onClick={() => setOpenYear(isOpen ? null : g.loanYear)}
+                  style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: isOpen ? "#FBF3DE" : "#FFFFFF", border: "none", cursor: "pointer", textAlign: "left" }}>
+                  <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, color: "#202B29", display: "flex", alignItems: "center", gap: 8 }}>
+                    ปีที่ผ่อน {g.loanYear} · {calLabel(g.items[0].calYear, g.items[0].monthIndex0)} – {calLabel(g.items[g.items.length - 1].calYear, g.items[g.items.length - 1].monthIndex0)}
+                    {isCurrentYear && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#8A6B1E", background: "#F0C674", padding: "2px 7px", borderRadius: 999 }}>ปีปัจจุบัน</span>
+                    )}
+                  </span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459" }}>คงเหลือปลายปี {fmt(yearBalance)}</span>
+                    <span style={{ fontSize: 12, color: "#6B6459", transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▾</span>
+                  </span>
+                </button>
+                {isOpen && (
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ background: "#F6F3EC" }}>
+                          <th style={{ ...tableThStyle, textAlign: "left" }}>งวดที่</th>
+                          <th style={{ ...tableThStyle, textAlign: "left" }}>เดือน/ปี</th>
+                          <th style={tableThStyle}>ดอกเบี้ย %/ปี</th>
+                          <th style={tableThStyle}>ยอดชำระ</th>
+                          <th style={tableThStyle}>ชำระเงินต้น</th>
+                          <th style={tableThStyle}>ชำระดอกเบี้ย</th>
+                          <th style={tableThStyle}>ยอดหนี้คงเหลือ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {g.items.map((r) => {
+                          const isCurrent = currentRow && r.period === currentRow.period;
+                          return (
+                            <tr key={r.period} style={{ background: isCurrent ? "#FBF3DE" : "transparent", boxShadow: isCurrent ? "inset 3px 0 0 #AD8A2E" : "none" }}>
+                              <td style={{ ...tableTdStyle, textAlign: "left", fontWeight: isCurrent ? 700 : 400, color: isCurrent ? "#8A6B1E" : "#202B29" }}>
+                                {r.period}
+                                {isCurrent && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#AD8A2E" }}>◄ งวดนี้</span>}
+                              </td>
+                              <td style={{ ...tableTdStyle, textAlign: "left" }}>{calLabel(r.calYear, r.monthIndex0)}</td>
+                              <td style={tableTdStyle}>
+                                {editing ? (
+                                  <input type="number" step="0.01" inputMode="decimal"
+                                    value={draft.rateOverrides[String(r.period)] !== undefined ? draft.rateOverrides[String(r.period)] : r.rate}
+                                    onChange={(e) => updateRateOverride(r.period, e.target.value)}
+                                    style={{ width: 66, textAlign: "right", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, border: "1px solid #C9C2B2", borderRadius: 6, padding: "3px 5px" }} />
+                                ) : `${r.rate.toFixed(2)}%`}
+                              </td>
+                              <td style={tableTdStyle}>
+                                {editing ? (
+                                  <input type="number" inputMode="decimal"
+                                    value={draft.paymentOverrides[String(r.period)] !== undefined ? draft.paymentOverrides[String(r.period)] : Math.round(r.payment)}
+                                    onChange={(e) => updatePaymentOverride(r.period, e.target.value)}
+                                    style={{ width: 88, textAlign: "right", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, border: "1px solid #C9C2B2", borderRadius: 6, padding: "3px 5px" }} />
+                                ) : fmt(r.payment)}
+                              </td>
+                              <td style={{ ...tableTdStyle, color: r.negative ? "#7A2E1F" : "#202B29" }}>{fmt(r.principal)}</td>
+                              <td style={tableTdStyle}>{fmt(r.interest)}</td>
+                              <td style={{ ...tableTdStyle, fontWeight: 600 }}>{fmt(r.balance)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {editing && <div style={hintStyle}>ตั้งวงเงินกู้ เดือน/ปีที่เริ่มผ่อน ดอกเบี้ยและยอดชำระของงวดแรกด้านบน แล้วขยายปีที่ต้องการในตารางเพื่อแก้ไขดอกเบี้ยหรือยอดชำระของงวดใดก็ได้ — งวดที่ไม่ได้แก้จะยกยอดจากงวดก่อนหน้าให้อัตโนมัติ กด "บันทึก" เพื่อคำนวณและเก็บไว้ใช้ครั้งถัดไป</div>}
+    </div>
+  );
+}
+
+function CrossLink() {
+  const vw = useWindowWidth();
+  const navMax = vw >= 1024 ? 880 : vw >= 640 ? 640 : 480;
+  return (
+    <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#F6F3EC", borderBottom: "1px solid #E6E0D2", display: "flex", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: navMax, display: "flex", gap: 8, padding: "14px 16px 10px" }}>
+        <a href="index.html" style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459" }}>ภาพรวมการเงิน</a>
+        <a href="tax.html" style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none", border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459" }}>เตรียมภาษี</a>
+        <span style={{ flex: 1, padding: "10px 12px", borderRadius: 12, textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, border: "1.5px solid #7A2E1F", background: "#7A2E1F", color: "#FFFFFF" }}>ผ่อนอสังหา</span>
+      </div>
+    </div>
+  );
+}
+
+function LoanApp() {
+  // loans เก็บเป็น "อาร์เรย์ของสัญญาผ่อน" แต่ละตัวมี id เป็นของตัวเอง
+  // (รองรับหลายรายการ เช่น บ้าน + คอนโด แยกกันได้) เก็บใน endpoint / localStorage
+  // key ของตัวเอง แยกจากทั้งภาพรวมการเงินและภาษีโดยสมบูรณ์
+  const [loans, setLoans] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState(false);
+  const [pendingEditId, setPendingEditId] = useState(null);
+  const cloudSafe = useRef(!DRIVE_CONFIGURED);
+  const viewportWidth = useWindowWidth();
+  const isDesktop = viewportWidth >= 1024;
+  const isTablet = viewportWidth >= 640;
+  const containerMaxWidth = isDesktop ? 880 : isTablet ? 640 : 480;
+
+  useEffect(() => {
+    let mounted = true;
+    if (!DRIVE_CONFIGURED) {
+      try {
+        const raw = localStorage.getItem(LOCAL_FALLBACK_KEY);
+        if (mounted) setLoans(raw ? (JSON.parse(raw).loans || []) : []);
+      } catch (e) {}
+      if (mounted) setLoaded(true);
+      return;
+    }
+    fetch(DRIVE_API_URL)
+      .then((r) => r.json())
+      .then((data) => { if (mounted) { setLoans((data && data.loans) || []); cloudSafe.current = true; } })
+      .catch(() => { if (mounted) setSyncError(true); })
+      .finally(() => { if (mounted) setLoaded(true); });
+    return () => { mounted = false; };
+  }, []);
+
+  const persist = (nextLoans) => {
+    setLoans(nextLoans);
+    const payload = { loans: nextLoans, lastUpdated: new Date().toISOString() };
+    if (!DRIVE_CONFIGURED) {
+      try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(payload)); } catch (e) {}
+      return;
+    }
+    if (!cloudSafe.current) return; // โหลดครั้งแรกไม่สำเร็จ — กันไม่ให้เขียนทับข้อมูลบนคลาวด์
+    setSyncError(false);
+    fetch(DRIVE_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+    }).catch(() => setSyncError(true));
+  };
+
+  const addLoan = () => {
+    const newLoan = {
+      id: makeId(), name: "รายการผ่อนใหม่", principal: 0, startMonth: todayYM(), maxYears: 30,
+      rateOverrides: {}, paymentOverrides: {},
+    };
+    persist([...loans, newLoan]);
+    setPendingEditId(newLoan.id);
+  };
+  const saveLoan = (updated) => persist(loans.map((l) => (l.id === updated.id ? updated : l)));
+  const removeLoan = (id) => persist(loans.filter((l) => l.id !== id));
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F6F3EC" }}>
+      <CrossLink />
+      <div style={{ padding: isDesktop ? "24px 28px 60px" : "20px 16px 60px", display: "flex", justifyContent: "center" }}>
+        <div style={{ width: "100%", maxWidth: containerMaxWidth }}>
+          <div style={{ marginBottom: 4 }}>
+            <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, letterSpacing: "0.08em", color: "#7A2E1F", fontWeight: 600, textTransform: "uppercase" }}>ผ่อนอสังหาริมทรัพย์</div>
+            <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 20, color: "#202B29", marginTop: 2 }}>ตารางผ่อนชำระสินเชื่อ</div>
+          </div>
+
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, margin: "10px 0 16px", color: syncError ? "#7A2E1F" : DRIVE_CONFIGURED ? "#2F5D46" : "#AD8A2E" }}>
+            {!loaded
+              ? "กำลังโหลด..."
+              : syncError
+              ? "⚠️ ซิงก์ไม่สำเร็จ — แสดงข้อมูลล่าสุดที่มี และหยุดเขียนทับไว้ก่อนเพื่อกันข้อมูลหาย"
+              : DRIVE_CONFIGURED
+              ? "☁️ เก็บแยกในที่เก็บของตัวเอง (คนละไฟล์กับภาพรวมการเงินและภาษี)"
+              : "ยังไม่ได้ตั้งค่าที่เก็บบนคลาวด์ — เก็บในเบราว์เซอร์นี้ (แยกจากหน้าอื่นอยู่แล้ว)"}
+          </div>
+
+          {loaded && loans.length === 0 && (
+            <div style={{ background: "#FFFFFF", border: "1px dashed #C9C2B2", borderRadius: 14, padding: 24, textAlign: "center", marginBottom: 16 }}>
+              <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, color: "#6B6459", marginBottom: 12 }}>ยังไม่มีรายการผ่อน — เพิ่มบ้านหรือคอนโดที่กำลังผ่อนเพื่อดูตารางผ่อนชำระ</div>
+              <button onClick={addLoan} style={{ ...saveBtnStyle, padding: "9px 16px", fontSize: 13 }}>+ เพิ่มรายการผ่อนใหม่</button>
+            </div>
+          )}
+
+          {loans.map((loan) => (
+            <LoanCard key={loan.id} loan={loan} onSave={saveLoan} onRemove={removeLoan}
+              autoEdit={loan.id === pendingEditId} onAutoEditHandled={() => setPendingEditId(null)} />
+          ))}
+
+          {loaded && loans.length > 0 && (
+            <button onClick={addLoan} style={{ ...addBtnStyle, width: "100%", textAlign: "center", borderStyle: "solid", borderColor: "#7A2E1F", color: "#7A2E1F" }}>+ เพิ่มรายการผ่อนใหม่</button>
+          )}
+
+          <div style={{ marginTop: 24, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
+            หมายเหตุ: กด "+ เพิ่มรายการผ่อนใหม่" สำหรับแต่ละสินทรัพย์ที่กำลังผ่อน (เช่น บ้าน คอนโด แยกกันได้) แล้วกด "แก้ไข" เพื่อตั้งวงเงินกู้ เดือน/ปีที่เริ่มผ่อน (ค.ศ.) อัตราดอกเบี้ยและยอดชำระของงวดแรก ระบบจะคำนวณตารางผ่อนแบบลดต้นลดดอกให้อัตโนมัติ (ดอกเบี้ยของแต่ละงวดคิดจากยอดหนี้คงเหลือ ณ ต้นงวด) กด "ดูตารางผ่อน" เพื่อดูตารางแยกเป็นปีๆ แบบพับเก็บได้ แตะปีที่ต้องการเพื่อขยายดูรายละเอียดรายเดือน ระหว่างแก้ไข สามารถปรับอัตราดอกเบี้ยหรือยอดชำระของงวดใดก็ได้โดยตรงในตาราง งวดที่ไม่ได้แก้จะยกยอดค่าจากงวดก่อนหน้าให้อัตโนมัติเสมอ ระบบจะเตือนถ้ายอดชำระต่องวดต่ำเกินไปจนผ่อนไม่หมดภายในระยะเวลาสูงสุดที่ตั้งไว้ ข้อมูลหน้านี้ถูกเก็บแยกไว้ในที่เก็บของตัวเอง (คนละไฟล์กับภาพรวมการเงินและภาษี) แก้หรือพังฝั่งไหนก็ไม่กระทบอีกฝั่ง
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<LoanApp />);
+</script>
+</body>
+</html>
