@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>งานบ้านประจำ</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+Thai:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #F6F3EC; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script type="text/babel" data-presets="react" src="nav.js"></script>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const fmt = (n) => "฿" + Math.round(n || 0).toLocaleString("th-TH");
+function makeId() {
+  return `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const THAI_MONTHS_ABBR = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
+const THAI_MONTHS_FULL = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"];
+const THAI_WEEKDAYS_ABBR = ["อา.","จ.","อ.","พ.","พฤ.","ศ.","ส."];
+const REMINDER_WINDOW_DAYS = 30;
+
+// 🔧 ที่เก็บข้อมูล "งานบ้านประจำ" แยกต่างหากจากภาพรวมการเงิน/ภาษี/ผ่อนอสังหา
+// วาง URL ของ Google Apps Script Web App "ตัวที่ 4" (คนละ deployment / คนละ
+// ไฟล์บน Drive จากอีกสามหน้า) ตรงนี้ ปลายทางลงท้ายด้วย /exec — โค้ดฝั่ง Apps
+// Script อยู่ในไฟล์ home-tasks-apps-script.gs ที่แนบมาให้ (paste เข้าโปรเจกต์
+// ใหม่บน script.google.com แล้ว Deploy เป็น Web App)
+// ➜ ตราบใดที่ยังไม่วาง ข้อมูลจะถูกเก็บในเบราว์เซอร์เครื่องนี้ (localStorage)
+//   ซึ่งก็แยกจากอีกสามหน้าอยู่แล้ว ไม่ปนกันแน่นอน
+const DRIVE_API_URL = "PASTE_YOUR_TASKS_SCRIPT_URL_HERE";
+const DRIVE_CONFIGURED = !!DRIVE_API_URL && DRIVE_API_URL.indexOf("PASTE_YOUR") === -1;
+const LOCAL_FALLBACK_KEY = "happy-money-tasks-fallback";
+
+// ---------- date helpers ----------
+function parseISODate(str) {
+  if (!str) return null;
+  const [y, m, d] = str.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+function startOfToday() {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+}
+function addMonths(d, months) {
+  return new Date(d.getFullYear(), d.getMonth() + months, d.getDate());
+}
+function daysInMonth(year, monthIndex0) {
+  return new Date(year, monthIndex0 + 1, 0).getDate();
+}
+function formatISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function daysUntilDate(d) {
+  if (!d) return null;
+  return Math.round((d - startOfToday()) / 86400000);
+}
+function formatDate(d) {
+  if (!d) return "ยังไม่ระบุวันที่";
+  return `${d.getDate()} ${THAI_MONTHS_ABBR[d.getMonth()]} ${d.getFullYear() + 543}`;
+}
+// "ทุก 3 เดือน" / "ทุก 1 ปี" / "ทุก 2 ปี" — cadences that land on whole years
+// read more naturally in years than as a big month count.
+function intervalLabel(months) {
+  const m = Math.max(1, Number(months) || 1);
+  if (m % 12 === 0) return `ทุก ${m / 12} ปี`;
+  return `ทุก ${m} เดือน`;
+}
+// Builds a full 7-column month grid, including spillover days from the
+// previous/next month (marked inMonth:false, dimmed + non-interactive) so
+// every week row is complete.
+function buildMonthGrid(viewDate) {
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+  const startOffset = new Date(year, month, 1).getDay(); // 0 = อาทิตย์
+  const totalDays = daysInMonth(year, month);
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) {
+    cells.push({ date: new Date(year, month, 1 - (startOffset - i)), inMonth: false });
+  }
+  for (let d = 1; d <= totalDays; d++) {
+    cells.push({ date: new Date(year, month, d), inMonth: true });
+  }
+  while (cells.length % 7 !== 0) {
+    const last = cells[cells.length - 1].date;
+    cells.push({ date: new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1), inMonth: false });
+  }
+  return cells;
+}
+
+// ---------- DEFAULT DATA ----------
+// แสดงเป็นตัวอย่างเฉยๆ จนกว่าจะกด "บันทึก" ครั้งแรก — ไม่ถูกเขียนลง Drive
+// อัตโนมัติตอนโหลดหน้า (ต่างจากหน้าอื่นที่ seed แล้วเขียนกลับทันที) เพราะยังไม่
+// อยากให้ข้อมูลตัวอย่างไปทับไฟล์บน Drive ก่อนผู้ใช้ตรวจสอบ/แก้ให้ตรงกับบ้านจริง
+const DEFAULT_TASK_SEEDS = [
+  { name: "ล้างแอร์ทุกเครื่อง", notes: "ล้างแผ่นกรองและคอยล์เย็น ช่วยประหยัดไฟและลดฝุ่น", intervalMonths: 3 },
+  { name: "เปลี่ยนไส้กรองเครื่องกรองน้ำ", notes: "", intervalMonths: 6 },
+  { name: "ตรวจเช็คถังดับเพลิง", notes: "เช็คเข็มวัดแรงดันและวันหมดอายุ", intervalMonths: 12 },
+  { name: "ทำความสะอาดรางน้ำฝน", notes: "", intervalMonths: 6 },
+  { name: "ตรวจสอบเบรกเกอร์กันดูด", notes: "กดปุ่ม Test บนเบรกเกอร์เพื่อตรวจสภาพ", intervalMonths: 12 },
+];
+const DEFAULT_TASKS = DEFAULT_TASK_SEEDS.map((t, i) => ({
+  id: `task-default-${i}`,
+  name: t.name,
+  notes: t.notes,
+  intervalMonths: t.intervalMonths,
+  dueDate: formatISO(addMonths(startOfToday(), t.intervalMonths)),
+  lastDone: null,
+}));
+
+function useWindowWidth() {
+  const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 480);
+  useEffect(() => {
+    const onResize = () => setW(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return w;
+}
+
+// ---------- shared small styles (matching the finance/tax/loan pages, themed
+// with this page's own accent color to match its nav.js tab color) ----------
+const ACCENT = "#7A4F22";
+const inputStyle = { flex: 1, minWidth: 0, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 13, border: "1px solid #C9C2B2", borderRadius: 7, padding: "7px 9px", color: "#202B29", background: "#FFFDF8" };
+const labelStyle = { fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#6B6459", marginBottom: 4, display: "block" };
+const editBtnStyle = { background: "none", border: "1px solid #C9C2B2", borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", cursor: "pointer", whiteSpace: "nowrap" };
+const saveBtnStyle = { background: ACCENT, border: `1px solid ${ACCENT}`, borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#fff", cursor: "pointer" };
+const cancelBtnStyle = { background: "none", border: "1px solid #C9C2B2", borderRadius: 8, padding: "5px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", cursor: "pointer" };
+const removeBtnStyle = { width: 28, height: 28, borderRadius: 7, border: "1px solid #E0A9A0", background: "#FBEDEA", color: "#9A3B2E", cursor: "pointer", fontSize: 13, flexShrink: 0 };
+const addBtnStyle = { marginTop: 8, background: "none", border: "1px dashed #C9C2B2", borderRadius: 7, padding: "8px 10px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#6B6459", cursor: "pointer" };
+const hintStyle = { fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#AD8A2E", marginTop: 8 };
+const doneBtnStyle = { background: "#EAF3EC", border: "1px solid #9FC5AC", borderRadius: 8, padding: "6px 12px", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, fontWeight: 600, color: "#2F5D46", cursor: "pointer", whiteSpace: "nowrap" };
+const calNavBtnStyle = { width: 30, height: 30, borderRadius: 8, border: "1px solid #E6E0D2", background: "#FFFFFF", color: "#6B6459", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
+
+function SectionTitle({ eyebrow, title, captionBelow }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, letterSpacing: "0.08em", color: ACCENT, fontWeight: 600, textTransform: "uppercase" }}>{eyebrow}</div>
+      <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 18, color: "#202B29", marginTop: 2 }}>{title}</div>
+      {captionBelow && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#6B6459", marginTop: 2 }}>{captionBelow}</div>}
+    </div>
+  );
+}
+function StatCard({ label, value, color }) {
+  return (
+    <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: "14px 16px" }}>
+      <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", marginBottom: 6 }}>{label}</div>
+      <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 22, color: color || "#202B29" }}>{value}</div>
+    </div>
+  );
+}
+function EditToggle({ editing, onStart, onSave, onCancel, startLabel }) {
+  return editing ? (
+    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+      <button onClick={onSave} style={saveBtnStyle}>บันทึก</button>
+      <button onClick={onCancel} style={cancelBtnStyle}>ยกเลิก</button>
+    </div>
+  ) : (
+    <button onClick={onStart} style={editBtnStyle}>{startLabel}</button>
+  );
+}
+
+// Month grid defaulting to the current month, marking every day that has a
+// task's next due date on it. Reads straight from the `tasks` prop — the
+// same array loaded from/saved to Google Drive below, so the calendar always
+// matches whatever is currently saved; no separate data source. Each task
+// only tracks a single upcoming due date (not a full recurrence series), so
+// only that next occurrence appears; once it's done and the date rolls
+// forward, the marker moves with it.
+function MonthCalendar({ tasks }) {
+  const today = startOfToday();
+  const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [selectedDate, setSelectedDate] = useState(today);
+
+  const dueMap = {};
+  tasks.forEach((t) => {
+    if (!t.dueDate) return;
+    (dueMap[t.dueDate] = dueMap[t.dueDate] || []).push(t);
+  });
+
+  const cells = buildMonthGrid(viewDate);
+  const monthLabel = `${THAI_MONTHS_FULL[viewDate.getMonth()]} ${viewDate.getFullYear() + 543}`;
+  const todayIso = formatISO(today);
+  const selectedIso = selectedDate ? formatISO(selectedDate) : null;
+  const selectedTasks = selectedIso ? (dueMap[selectedIso] || []) : [];
+
+  const goPrevMonth = () => setViewDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
+  const goNextMonth = () => setViewDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
+  const goToday = () => { setViewDate(new Date(today.getFullYear(), today.getMonth(), 1)); setSelectedDate(today); };
+
+  return (
+    <div style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: 16, marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <button onClick={goPrevMonth} title="เดือนก่อนหน้า" style={calNavBtnStyle}>‹</button>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 15, color: "#202B29" }}>{monthLabel}</span>
+          <button onClick={goToday} style={{ background: "none", border: "none", color: ACCENT, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 }}>วันนี้</button>
+        </div>
+        <button onClick={goNextMonth} title="เดือนถัดไป" style={calNavBtnStyle}>›</button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 }}>
+        {THAI_WEEKDAYS_ABBR.map((w) => (
+          <div key={w} style={{ textAlign: "center", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 10.5, color: "#A79E8E", fontWeight: 600 }}>{w}</div>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+        {cells.map((c, i) => {
+          const iso = formatISO(c.date);
+          const dueTasks = dueMap[iso] || [];
+          const isToday = iso === todayIso;
+          const isSelected = c.inMonth && selectedIso === iso;
+          return (
+            <button key={i} onClick={() => c.inMonth && setSelectedDate(c.date)} disabled={!c.inMonth}
+              style={{
+                aspectRatio: "1", borderRadius: 9,
+                border: isSelected ? `1.5px solid ${ACCENT}` : isToday ? "1.5px solid #AD8A2E" : "1px solid transparent",
+                background: isSelected ? ACCENT : dueTasks.length && c.inMonth ? "#FBF3DE" : "transparent",
+                color: !c.inMonth ? "#D8D2C4" : isSelected ? "#FFFFFF" : "#202B29",
+                cursor: c.inMonth ? "pointer" : "default",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, fontWeight: isToday || isSelected ? 700 : 400,
+                padding: 2, position: "relative",
+              }}>
+              {c.date.getDate()}
+              {dueTasks.length > 0 && c.inMonth && (
+                <span style={{ width: 4, height: 4, borderRadius: "50%", background: isSelected ? "#FFFFFF" : "#AD8A2E", marginTop: 2 }} />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #E6E0D2" }}>
+        <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, fontWeight: 600, color: "#202B29", marginBottom: 8 }}>
+          {selectedDate ? `รายการวันที่ ${formatDate(selectedDate)}` : "แตะวันที่เพื่อดูรายการ"}
+        </div>
+        {selectedTasks.length === 0 ? (
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#A79E8E" }}>ไม่มีงานที่ต้องทำในวันนี้</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {selectedTasks.map((t) => (
+              <div key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5 }}>
+                <span style={{ color: "#202B29", minWidth: 0 }}>{t.name}</span>
+                <span style={{ color: "#AD8A2E", fontSize: 11, flexShrink: 0 }}>{intervalLabel(t.intervalMonths)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Alert banner for tasks due within 1 day — overdue tasks keep appearing here
+// until marked done (same reminder convention as the other pages' bills).
+function ReminderBanner({ tasks }) {
+  if (!tasks.length) return null;
+  return (
+    <div style={{ background: "#FBF3DE", border: "1px solid #E8CE8A", borderRadius: 14, padding: "14px 16px", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 15 }}>🏠</span>
+        <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 13, color: "#7A5C1E" }}>งานบ้านใกล้ถึงกำหนด</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {tasks.map((t) => (
+          <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5 }}>
+            <span style={{ color: "#5C4A1A" }}>{t.name}</span>
+            <span style={{ fontWeight: 600, whiteSpace: "nowrap", color: t.days < 0 ? "#7A2E1F" : t.days <= 7 ? "#AD8A2E" : "#8A6B1E" }}>
+              {t.days < 0 ? `เลยกำหนด ${Math.abs(t.days)} วัน` : t.days === 0 ? "ถึงกำหนดวันนี้" : `อีก ${t.days} วัน`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Read-only card list, soonest due date first.
+function TaskList({ tasks, onMarkDone }) {
+  const sorted = [...tasks].sort((a, b) => {
+    const da = parseISODate(a.dueDate), db = parseISODate(b.dueDate);
+    if (da && db) return da - db;
+    if (da) return -1;
+    if (db) return 1;
+    return 0;
+  });
+  if (!sorted.length) {
+    return <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, color: "#A79E8E", padding: "12px 2px" }}>ยังไม่มีงานบ้านในลิสต์ กด "แก้ไขรายการ" เพื่อเพิ่ม</div>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
+      {sorted.map((t) => {
+        const due = parseISODate(t.dueDate);
+        const days = due ? daysUntilDate(due) : null;
+        const overdue = days !== null && days < 0;
+        const soon = days !== null && days >= 0 && days <= REMINDER_WINDOW_DAYS;
+        const lastDoneDate = t.lastDone ? parseISODate(t.lastDone) : null;
+        return (
+          <div key={t.id} style={{ background: "#FFFFFF", border: "1px solid #E6E0D2", borderRadius: 14, padding: "14px 16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontWeight: 600, fontSize: 14, color: "#202B29" }}>{t.name || "(ไม่มีชื่อ)"}</div>
+                <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#AD8A2E", marginTop: 2 }}>{intervalLabel(t.intervalMonths)}</div>
+              </div>
+              <button onClick={() => onMarkDone(t.id)} style={doneBtnStyle}>✓ ทำแล้ววันนี้</button>
+            </div>
+            {t.notes && <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12, color: "#6B6459", marginBottom: 6 }}>{t.notes}</div>}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12 }}>
+              <span style={{ color: overdue ? "#7A2E1F" : soon ? "#AD8A2E" : "#6B6459", fontWeight: overdue || soon ? 600 : 400 }}>
+                กำหนด {formatDate(due)}
+                {overdue && " · เลยกำหนดแล้ว"}
+                {soon && !overdue && ` · อีก ${days} วัน`}
+              </span>
+              <span style={{ color: "#A79E8E", fontSize: 11 }}>
+                {lastDoneDate ? `ทำล่าสุด ${formatDate(lastDoneDate)}` : "ยังไม่เคยทำ"}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Editable list: name, notes, cadence (quick-pick chips + free entry), and
+// the next due date, plus add/remove.
+function TaskEditor({ tasks, onChangeField, onAdd, onRemove }) {
+  const presets = [1, 3, 6, 12, 24];
+  return (
+    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+      {tasks.map((t) => (
+        <div key={t.id} style={{ border: "1px solid #E6E0D2", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input type="text" value={t.name} placeholder="ชื่องาน เช่น ล้างแอร์"
+              onChange={(e) => onChangeField(t.id, "name", e.target.value)} style={{ ...inputStyle, fontWeight: 600 }} />
+            <button onClick={() => onRemove(t.id)} title="ลบงานนี้" style={removeBtnStyle}>✕</button>
+          </div>
+          <input type="text" value={t.notes} placeholder="รายละเอียดเพิ่มเติม (ไม่บังคับ)"
+            onChange={(e) => onChangeField(t.id, "notes", e.target.value)} style={inputStyle} />
+          <div>
+            <div style={labelStyle}>ทำซ้ำทุกกี่เดือน</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              {presets.map((p) => (
+                <button key={p} onClick={() => onChangeField(t.id, "intervalMonths", String(p))}
+                  style={{
+                    padding: "5px 10px", borderRadius: 999, fontSize: 11.5, cursor: "pointer",
+                    fontFamily: "'IBM Plex Sans Thai', sans-serif",
+                    border: String(t.intervalMonths) === String(p) ? `1.5px solid ${ACCENT}` : "1px solid #E6E0D2",
+                    background: String(t.intervalMonths) === String(p) ? "#FBF3DE" : "#FFFFFF",
+                    color: String(t.intervalMonths) === String(p) ? ACCENT : "#6B6459",
+                    fontWeight: String(t.intervalMonths) === String(p) ? 600 : 400,
+                  }}>{intervalLabel(p)}</button>
+              ))}
+              <input type="number" min="1" value={t.intervalMonths} placeholder="กำหนดเอง"
+                onChange={(e) => onChangeField(t.id, "intervalMonths", e.target.value)}
+                style={{ width: 78, textAlign: "right", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, border: "1px solid #C9C2B2", borderRadius: 7, padding: "5px 7px", color: "#202B29", background: "#FFFDF8" }} />
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11.5, color: "#A79E8E", flexShrink: 0 }}>ครบกำหนดครั้งถัดไป:</span>
+            <input type="date" value={t.dueDate || ""}
+              onChange={(e) => onChangeField(t.id, "dueDate", e.target.value)}
+              style={{ flex: 1, fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 12.5, border: "1px solid #C9C2B2", borderRadius: 7, padding: "5px 7px", color: "#202B29", background: "#FFFDF8" }} />
+          </div>
+        </div>
+      ))}
+      <button onClick={onAdd} style={{ ...addBtnStyle, width: "100%", textAlign: "center", borderStyle: "solid", borderColor: ACCENT, color: ACCENT }}>+ เพิ่มงานบ้าน</button>
+    </div>
+  );
+}
+
+function TasksApp() {
+  // allData:
+  //   allData.tasks       -> [{ id, name, notes, intervalMonths, dueDate, lastDone }]
+  //   allData.lastUpdated -> ISO timestamp of the last save
+  // เก็บที่ Google Drive ผ่าน Apps Script ของตัวเอง (แยกไฟล์กับอีก 3 หน้า) —
+  // เหมือน pattern เดียวกับ tax.html/loan.html: cloudSafe กันไม่ให้เขียนทับ
+  // ข้อมูลบนคลาวด์ถ้าโหลดครั้งแรกไม่สำเร็จ
+  const [allData, setAllData] = useState({});
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState(false);
+  const [editingTasks, setEditingTasks] = useState(false);
+  const [taskDraft, setTaskDraft] = useState(null);
+  const cloudSafe = useRef(!DRIVE_CONFIGURED);
+  const viewportWidth = useWindowWidth();
+  const isDesktop = viewportWidth >= 1024;
+  const isTablet = viewportWidth >= 640;
+  const containerMaxWidth = isDesktop ? 880 : isTablet ? 640 : 480;
+
+  useEffect(() => {
+    let mounted = true;
+    if (!DRIVE_CONFIGURED) {
+      try {
+        const raw = localStorage.getItem(LOCAL_FALLBACK_KEY);
+        if (mounted) setAllData(raw ? JSON.parse(raw) : {});
+      } catch (e) {}
+      if (mounted) setLoaded(true);
+      return;
+    }
+    fetch(DRIVE_API_URL)
+      .then((r) => r.json())
+      .then((data) => { if (mounted) { setAllData(data || {}); cloudSafe.current = true; } })
+      .catch(() => { if (mounted) setSyncError(true); })
+      .finally(() => { if (mounted) setLoaded(true); });
+    return () => { mounted = false; };
+  }, []);
+
+  const persist = (nextAllData) => {
+    const stamped = { ...nextAllData, lastUpdated: new Date().toISOString() };
+    setAllData(stamped);
+    if (!DRIVE_CONFIGURED) {
+      try { localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(stamped)); } catch (e) {}
+      return;
+    }
+    if (!cloudSafe.current) return; // โหลดครั้งแรกไม่สำเร็จ — กันไม่ให้เขียนทับข้อมูลบนคลาวด์
+    setSyncError(false);
+    fetch(DRIVE_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(stamped),
+    }).catch(() => setSyncError(true));
+  };
+
+  const tasks = allData.tasks || DEFAULT_TASKS;
+
+  const markDone = (id) => {
+    const today = startOfToday();
+    const nextTasks = tasks.map((t) => t.id !== id ? t : {
+      ...t,
+      lastDone: formatISO(today),
+      dueDate: formatISO(addMonths(today, Math.max(1, Number(t.intervalMonths) || 1))),
+    });
+    persist({ ...allData, tasks: nextTasks });
+  };
+
+  const startEditTasks = () => {
+    setTaskDraft(tasks.map((t) => ({ ...t, intervalMonths: String(t.intervalMonths) })));
+    setEditingTasks(true);
+  };
+  const updateTaskField = (id, field, value) => setTaskDraft((prev) => prev.map((t) => t.id === id ? { ...t, [field]: value } : t));
+  const addTaskItem = () => setTaskDraft((prev) => [...prev, {
+    id: makeId(), name: "", notes: "", intervalMonths: "3",
+    dueDate: formatISO(addMonths(startOfToday(), 3)), lastDone: null,
+  }]);
+  const removeTaskItem = (id) => setTaskDraft((prev) => prev.filter((t) => t.id !== id));
+  const cancelEditTasks = () => { setEditingTasks(false); setTaskDraft(null); };
+  const saveEditTasks = () => {
+    const finalTasks = taskDraft.map((t) => {
+      const months = Math.max(1, parseInt(t.intervalMonths, 10) || 1);
+      return {
+        id: t.id,
+        name: (t.name || "").trim() || "งานใหม่",
+        notes: (t.notes || "").trim(),
+        intervalMonths: months,
+        dueDate: t.dueDate || formatISO(addMonths(startOfToday(), months)),
+        lastDone: t.lastDone || null,
+      };
+    });
+    persist({ ...allData, tasks: finalTasks });
+    setEditingTasks(false); setTaskDraft(null);
+  };
+
+  const withDays = tasks.map((t) => ({ ...t, days: daysUntilDate(parseISODate(t.dueDate)) }));
+  const overdueCount = withDays.filter((t) => t.days !== null && t.days < 0).length;
+  const soonCount = withDays.filter((t) => t.days !== null && t.days >= 0 && t.days <= REMINDER_WINDOW_DAYS).length;
+  const upcoming = withDays.filter((t) => t.days !== null && t.days <= 1).sort((a, b) => a.days - b.days);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F6F3EC" }}>
+      <CrossLink active="tasks" />
+      <div style={{ padding: isDesktop ? "24px 28px 60px" : isTablet ? "24px 20px 60px" : "20px 16px 60px", display: "flex", justifyContent: "center" }}>
+        <div style={{ width: "100%", maxWidth: containerMaxWidth }}>
+          <div style={{ marginBottom: 4 }}>
+            <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, letterSpacing: "0.08em", color: ACCENT, fontWeight: 600, textTransform: "uppercase" }}>งานบ้านประจำ</div>
+            <div style={{ fontFamily: "'Noto Serif Thai', serif", fontWeight: 700, fontSize: 20, color: "#202B29", marginTop: 2 }}>งานบำรุงรักษาบ้านตามรอบเวลา</div>
+          </div>
+
+          <div style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, margin: "10px 0 16px", color: syncError ? "#7A2E1F" : DRIVE_CONFIGURED ? "#2F5D46" : "#AD8A2E" }}>
+            {!loaded
+              ? "กำลังโหลด..."
+              : syncError
+              ? "⚠️ ซิงก์ไม่สำเร็จ — แสดงข้อมูลล่าสุดที่มี และหยุดเขียนทับไว้ก่อนเพื่อกันข้อมูลหาย"
+              : DRIVE_CONFIGURED
+              ? "☁️ เก็บบน Google Drive แล้ว (คนละไฟล์กับภาพรวมการเงิน/ภาษี/ผ่อนอสังหา)"
+              : "ยังไม่ได้ตั้งค่าที่เก็บบน Google Drive — เก็บในเบราว์เซอร์นี้ก่อน (แยกจากหน้าอื่นอยู่แล้ว)"}
+          </div>
+
+          <ReminderBanner tasks={upcoming} />
+
+          <div style={{ display: "grid", gridTemplateColumns: isTablet ? "repeat(3, 1fr)" : "1fr 1fr", gap: 10, marginBottom: 20 }}>
+            <StatCard label="งานทั้งหมด" value={tasks.length} color="#202B29" />
+            <StatCard label="เลยกำหนดแล้ว" value={overdueCount} color={overdueCount > 0 ? "#7A2E1F" : "#202B29"} />
+            <StatCard label="ใกล้ถึงกำหนด" value={soonCount} color={soonCount > 0 ? "#AD8A2E" : "#202B29"} />
+          </div>
+
+          <SectionTitle eyebrow="ปฏิทินงานบ้าน" title="มุมมองรายเดือน" captionBelow="เปิดมาที่เดือนปัจจุบันเสมอ · จุดสีใต้ตัวเลขคือวันที่มีงานครบกำหนด · ใช้ข้อมูลชุดเดียวกับด้านล่างที่เก็บบน Google Drive" />
+          <MonthCalendar tasks={tasks} />
+
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <SectionTitle eyebrow="รายการงานบ้าน" title="ตามรอบเวลา" />
+            <EditToggle editing={editingTasks} onStart={startEditTasks} onSave={saveEditTasks} onCancel={cancelEditTasks} startLabel="แก้ไขรายการ" />
+          </div>
+
+          {editingTasks ? (
+            <TaskEditor tasks={taskDraft} onChangeField={updateTaskField} onAdd={addTaskItem} onRemove={removeTaskItem} />
+          ) : (
+            <TaskList tasks={tasks} onMarkDone={markDone} />
+          )}
+          {editingTasks && <div style={hintStyle}>เพิ่ม/ลบงาน แก้ชื่อ รายละเอียด รอบเวลา และวันครบกำหนดได้ แล้วกด "บันทึก" เพื่อเขียนขึ้น Google Drive</div>}
+
+          <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid #E6E0D2", fontFamily: "'IBM Plex Sans Thai', sans-serif", fontSize: 11, color: "#8C8577", lineHeight: 1.6 }}>
+            หมายเหตุ: รายการเริ่มต้น 5 งานเป็นเพียงตัวอย่าง ยังไม่ถูกเขียนลง Google Drive จนกว่าจะกด "บันทึก" ครั้งแรก — แก้ไข/ลบให้ตรงกับบ้านของคุณก่อนได้ตามสบาย กด "ทำแล้ววันนี้" เมื่อทำงานเสร็จ ระบบจะเลื่อนกำหนดครั้งถัดไปตามรอบเวลาที่ตั้งไว้ให้อัตโนมัติ แบนเนอร์ด้านบนแจ้งเตือนล่วงหน้า 1 วันก่อนถึงกำหนดและแจ้งต่อเนื่องจนกว่าจะกดทำแล้ว ข้อมูลหน้านี้ถูกเก็บแยกไว้ในที่เก็บ Google Drive ของตัวเอง (คนละไฟล์กับภาพรวมการเงิน ภาษี และผ่อนอสังหา) แก้หรือพังฝั่งไหนก็ไม่กระทบอีกฝั่ง
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<TasksApp />);
+</script>
+</body>
+</html>
