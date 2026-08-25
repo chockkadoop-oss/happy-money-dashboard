@@ -21,9 +21,9 @@
 // href  = ไฟล์ปลายทางเมื่อกด (ต้องอยู่โฟลเดอร์เดียวกัน)
 // color = สีเน้นตอนเป็นแท็บที่กำลังเปิดอยู่ (ให้ตรงกับโทนสีเดิมของแต่ละหน้า)
 var HAPPY_MONEY_NAV_ITEMS = [
-  { key: "finance", label: "ภาพรวมการเงิน", href: "index.html", color: "#2F5D46" },
-  { key: "tax", label: "เตรียมภาษี", href: "tax.html", color: "#2B4C6F" },
-  { key: "loan", label: "ผ่อนอสังหา", href: "loan.html", color: "#7A2E1F" },
+  { key: "finance", label: "Financial", href: "index.html", color: "#2F5D46" },
+  { key: "tax", label: "Tax", href: "tax.html", color: "#2B4C6F" },
+  { key: "loan", label: "Loan", href: "loan.html", color: "#7A2E1F" },
 ];
 
 // สไตล์เดียวกับที่ tax.html/loan.html ใช้อยู่แล้ว (sticky บนสุด, พับ/ขยายตาม
